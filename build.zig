@@ -8,73 +8,24 @@ pub fn build(b: *std.Build) void {
     });
     const optimize: std.builtin.OptimizeMode = .ReleaseFast;
 
-    const out_dir_name = "img";
-
-    const mod = b.addModule("mame", .{
-        .root_source_file = b.path("src/root.zig"),
-        .target = target,
-        .code_model = .medany,
-    });
-
-    const mame = b.addExecutable(.{
-        .name = "mame",
-        .root_module = b.createModule(.{
-            .root_source_file = b.path("src/boot.zig"),
-            .target = target,
-            .optimize = optimize,
-            .imports = &.{
-                .{ .name = "mame", .module = mod },
-            },
-            .code_model = .medany,
-        }),
-        .linkage = .static,
-    });
-    mame.linker_script = b.path("kernel.ld");
-    mame.entry = .{ .symbol_name = "boot" };
-
-    b.installArtifact(mame);
-
-    const install_mame = b.addInstallFile(
-        mame.getEmittedBin(),
-        b.fmt("{s}/{s}", .{
-            out_dir_name,
-            mame.name,
-        }),
+    const mame_mod = createMameModule(b, target, optimize);
+    const kernel = createKernel(b, target, optimize, mame_mod);
+    const install_kernel = b.addInstallArtifact(
+        kernel,
+        .{ .dest_dir = .{ .override = .{ .custom = "img" } } },
     );
-    install_mame.step.dependOn(&mame.step);
-    b.getInstallStep().dependOn(&install_mame.step);
+    b.getInstallStep().dependOn(&install_kernel.step);
 
-    const run_step = b.step("run", "Run the app");
-
-    const qemu_args = [_][]const u8{
-        "qemu-system-riscv64",
-        "-machine",
-        "virt",
-        "-bios",
-        "default",
-        "-nographic",
-        "-serial",
-        "mon:stdio",
-        "--no-reboot",
-        "-kernel",
-        b.fmt("{s}/{s}", .{ b.install_path, install_mame.dest_rel_path }),
-        "-s",
-    };
-    const run_cmd = b.addSystemCommand(&qemu_args);
-    run_step.dependOn(&run_cmd.step);
-
-    run_cmd.step.dependOn(b.getInstallStep());
+    setupQemuStep(b, kernel);
 
     const mod_tests = b.addTest(.{
-        .root_module = mod,
+        .root_module = mame_mod,
     });
-
     const run_mod_tests = b.addRunArtifact(mod_tests);
 
     const exe_tests = b.addTest(.{
-        .root_module = mame.root_module,
+        .root_module = kernel.root_module,
     });
-
     const run_exe_tests = b.addRunArtifact(exe_tests);
 
     const test_step = b.step("test", "Run tests");
@@ -82,5 +33,58 @@ pub fn build(b: *std.Build) void {
     test_step.dependOn(&run_exe_tests.step);
 
     const check_step = b.step("check", "Check compilation");
-    check_step.dependOn(&mame.step);
+    check_step.dependOn(&kernel.step);
+}
+
+fn createMameModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+    const log_level_opt = b.option([]const u8, "log_level", "debug, info, warn, error") orelse "info";
+    const log_level = std.meta.stringToEnum(std.log.Level, log_level_opt) orelse .info;
+
+    const options = b.addOptions();
+    options.addOption(std.log.Level, "log_level", log_level);
+
+    const mod = b.addModule("mame", .{
+        .root_source_file = b.path("src/root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .code_model = .medany,
+    });
+    mod.addImport("mame", mod);
+    mod.addOptions("options", options);
+
+    return mod;
+}
+
+fn createKernel(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, mod: *std.Build.Module) *std.Build.Step.Compile {
+    const kernel = b.addExecutable(.{
+        .name = "mame",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("src/boot.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "mame", .module = mod }},
+            .code_model = .medany,
+        }),
+    });
+
+    kernel.linker_script = b.path("kernel.ld");
+    kernel.entry = .{ .symbol_name = "boot" };
+
+    return kernel;
+}
+
+fn setupQemuStep(b: *std.Build, kernel: *std.Build.Step.Compile) void {
+    const run_step = b.step("run", "Run mameOS in QEMU");
+
+    const qemu = b.addSystemCommand(&.{"qemu-system-riscv64"});
+    qemu.addArgs(&.{
+        "-machine",   "virt",
+        "-bios",      "default",
+        "-nographic", "-serial",
+        "mon:stdio",  "--no-reboot",
+        "-s",         "-kernel",
+    });
+    qemu.addArtifactArg(kernel);
+
+    run_step.dependOn(&qemu.step);
 }
