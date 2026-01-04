@@ -6,21 +6,33 @@ const klog = mame.klog;
 const sbi = mame.sbi;
 
 extern const __stack_top: anyopaque;
-extern var __bss: [*]u8;
+extern var __bss: anyopaque;
 extern const __bss_end: anyopaque;
+extern var __free_ram: anyopaque;
+extern const __free_ram_end: anyopaque;
 
 pub const std_options = klog.default_log_options;
 pub const panic = mame.panic.panic_fn;
 
 fn kernelMain() !void {
     const bss_len = @intFromPtr(&__bss_end) - @intFromPtr(&__bss);
-    @memset(__bss[0..bss_len], 0);
+    @memset(@as([*]u8, @ptrCast(&__bss))[0..bss_len], 0);
 
     mame.trap.init();
 
-    log.info("hello, world!", .{});
+    log.info("booted!", .{});
+    const memory_len = @intFromPtr(&__free_ram_end) - @intFromPtr(&__free_ram);
 
-    while (true) {}
+    var page_allocator = mame.mem.initPageAllocator(@ptrCast(@alignCast(&__free_ram)), memory_len);
+    const allocator = page_allocator.allocator();
+    const buf = allocator.alloc(u8, 128) catch {
+        @panic("failed to alloc");
+    };
+    const message = try std.fmt.bufPrint(buf, "hello, world", .{});
+    log.info("message: {s} {*}", .{ message, message.ptr });
+    allocator.free(buf);
+
+    while (true) asm volatile ("wfi");
 }
 
 export fn trampoline() noreturn {
