@@ -1,10 +1,23 @@
 const std = @import("std");
 const log = std.log.scoped(.boot);
 
+const Allocator = std.mem.Allocator;
+
 const mame = @import("mame");
 const klog = mame.klog;
 const sbi = mame.sbi;
 
+const Permission = mame.page.Permission;
+
+extern const __kernel_base: anyopaque;
+extern const __text_start: anyopaque;
+extern const __text_end: anyopaque;
+extern const __rodata_start: anyopaque;
+extern const __rodata_end: anyopaque;
+extern const __data_start: anyopaque;
+extern const __data_end: anyopaque;
+extern const __stack_start: anyopaque;
+extern const __stack_end: anyopaque;
 extern const __stack_top: anyopaque;
 extern var __bss: anyopaque;
 extern const __bss_end: anyopaque;
@@ -20,19 +33,37 @@ fn kernelMain() !void {
 
     mame.trap.init();
 
+    log.info("Booted!", .{});
+
     const memory_len = @intFromPtr(&__free_ram_end) - @intFromPtr(&__free_ram);
     const memory: [*]align(4096) u8 = @ptrCast(@alignCast(&__free_ram));
 
     var page_allocator = mame.mem.initPageAllocator(memory[0..memory_len]);
     const allocator = page_allocator.allocator();
-    const buf = allocator.alloc(u8, 128) catch {
-        @panic("failed to alloc");
-    };
-    const message = try std.fmt.bufPrint(buf, "hello, world", .{});
-    log.info("message: {s} {*}", .{ message, message.ptr });
-    allocator.free(buf);
+
+    const root_paddr = try mame.page.setupLv2Table(allocator);
+    // .text (read_execute)
+    try mapRange(allocator, root_paddr, @intFromPtr(&__text_start), @intFromPtr(&__text_end), .read_execute);
+    // .rodata (read_only)
+    try mapRange(allocator, root_paddr, @intFromPtr(&__rodata_start), @intFromPtr(&__rodata_end), .read_only);
+    // .data & .bss (read_write)
+    try mapRange(allocator, root_paddr, @intFromPtr(&__data_start), @intFromPtr(&__data_end), .read_write);
+    // stack (read_write)
+    try mapRange(allocator, root_paddr, @intFromPtr(&__stack_start), @intFromPtr(&__stack_end), .read_write);
+    // heap (read_write)
+    try mapRange(allocator, root_paddr, @intFromPtr(&__free_ram), @intFromPtr(&__free_ram_end), .read_write);
+    mame.page.enablePaging(root_paddr);
+
+    log.info("Mapped kernel memory", .{});
 
     while (true) asm volatile ("wfi");
+}
+
+fn mapRange(allocator: Allocator, root_paddr: usize, start_paddr: usize, end_paddr: usize, perm: Permission) !void {
+    var paddr = start_paddr;
+    while (paddr < end_paddr) : (paddr += 4096) {
+        try mame.page.map4kTo(allocator, root_paddr, paddr, paddr, perm);
+    }
 }
 
 export fn trampoline() noreturn {

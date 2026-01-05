@@ -14,5 +14,5 @@ pub fn panic_fn(msg: []const u8, _: ?*builtin.StackTrace, _: ?usize) noreturn {
         log.err("#{d:0>2}: 0x{X:0>16}", .{ i, frame });
     }
 
-    while (true) {}
+    while (true) asm volatile ("wfi");
 }
