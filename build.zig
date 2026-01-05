@@ -6,7 +6,7 @@ pub fn build(b: *std.Build) void {
         .os_tag = .freestanding,
         .cpu_model = .baseline,
     });
-    const optimize: std.builtin.OptimizeMode = .ReleaseFast;
+    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size") orelse .ReleaseFast;
 
     const mame_mod = createMameModule(b, target, optimize);
     const kernel = createKernel(b, target, optimize, mame_mod);
@@ -38,8 +38,7 @@ pub fn build(b: *std.Build) void {
 }
 
 fn createMameModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
-    const log_level_opt = b.option([]const u8, "log_level", "debug, info, warn, error") orelse "info";
-    const log_level = std.meta.stringToEnum(std.log.Level, log_level_opt) orelse .info;
+    const log_level = b.option(std.log.Level, "log_level", "debug, info, warn, error") orelse .info;
 
     const options = b.addOptions();
     options.addOption(std.log.Level, "log_level", log_level);
