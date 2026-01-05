@@ -13,6 +13,7 @@ pub const SbiError = error{
 const ecall = struct {
     const EID = enum(usize) {
         dbcn = 0x4442434e,
+        time = 0x54494d45,
         _,
     };
 
@@ -32,11 +33,19 @@ const ecall = struct {
         };
     }
 
+    inline fn oneArg64NoReturnNoError(eid: EID, fid: u32, arg0: u64) void {
+        asm volatile ("ecall"
+            :
+            : [eid] "{a7}" (@intFromEnum(eid)),
+              [fid] "{a6}" (fid),
+              [arg0] "{a0}" (arg0),
+        );
+    }
+
     inline fn threeArgs(eid: EID, fid: u32, arg0: u32, arg1: u32, arg2: u32) SbiError!i32 {
         var err: i32 = undefined;
         var value: i32 = undefined;
-        asm volatile (
-            \\ecall
+        asm volatile ("ecall"
             : [err] "={a0}" (err),
               [value] "={a1}" (value),
             : [eid] "{a7}" (@intFromEnum(eid)),
@@ -65,5 +74,15 @@ pub const console = struct {
             @truncate(@intFromPtr(b.ptr) >> 32),
         );
         return @intCast(ret);
+    }
+};
+
+pub const timer = struct {
+    const FID = enum(usize) {
+        set = 0,
+    };
+
+    pub fn set(time_val: u64) void {
+        ecall.oneArg64NoReturnNoError(.time, @intFromEnum(FID.set), time_val);
     }
 };

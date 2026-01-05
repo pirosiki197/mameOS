@@ -4,6 +4,7 @@ const log = std.log.scoped(.boot);
 const Allocator = std.mem.Allocator;
 
 const mame = @import("mame");
+const am = mame.am;
 const klog = mame.klog;
 const sbi = mame.sbi;
 
@@ -55,6 +56,14 @@ fn kernelMain() !void {
     mame.page.enablePaging(root_paddr);
 
     log.info("Mapped kernel memory", .{});
+
+    am.enableGlobalInterrupt();
+    am.enableTimerInterrupt();
+    const time = am.getTime();
+    mame.sbi.timer.set(time + 10_000_000);
+    while (true) {
+        asm volatile ("wfi");
+    }
 
     while (true) asm volatile ("wfi");
 }

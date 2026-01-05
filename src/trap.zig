@@ -86,9 +86,18 @@ export fn handleTrap(frame: *TrapFrame) void {
     const stval = asm volatile ("csrr %[val], stval"
         : [val] "=r" (-> usize),
     );
-    log.err("unexpected trap: scause={s} stval=0x{x}", .{ @tagName(scause), stval });
-    frame.dump();
-    @panic("panic!!!");
+    switch (scause) {
+        .supervisor_timer_interrupt => {
+            log.info("Tick!", .{});
+            const time = @import("mame").am.getTime();
+            @import("mame").sbi.timer.set(time + 10_000_000);
+        },
+        else => {
+            log.err("unexpected trap: scause={s} stval=0x{x}", .{ @tagName(scause), stval });
+            frame.dump();
+            @panic("panic!!!");
+        },
+    }
 }
 
 fn trapEntry() align(4) callconv(.naked) void {

@@ -14,3 +14,23 @@ pub const Satp = packed struct(u64) {
         );
     }
 };
+
+pub fn getTime() u64 {
+    return asm volatile ("csrr %[time], time"
+        : [time] "=r" (-> u64),
+    );
+}
+
+pub fn enableGlobalInterrupt() void {
+    asm volatile ("csrs sstatus, %[val]"
+        :
+        : [val] "r" (1 << 1),
+    );
+}
+
+pub fn enableTimerInterrupt() void {
+    asm volatile ("csrs sie, %[val]"
+        :
+        : [val] "r" (1 << 5),
+    );
+}
