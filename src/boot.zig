@@ -8,6 +8,7 @@ const am = mame.am;
 const klog = mame.klog;
 const sbi = mame.sbi;
 
+const ProcessManager = mame.process.ProcessManager;
 const Permission = mame.page.Permission;
 
 extern const __kernel_base: anyopaque;
@@ -27,6 +28,26 @@ extern const __free_ram_end: anyopaque;
 
 pub const std_options = klog.default_log_options;
 pub const panic = mame.panic.panic_fn;
+
+fn procAEntry() void {
+    log.info("Starting process A", .{});
+    while (true) {
+        log.info("A", .{});
+        manager.yield();
+        for (0..1_000_000_000) |_| asm volatile ("nop");
+    }
+}
+
+fn procBEntry() void {
+    log.info("Starting process B", .{});
+    while (true) {
+        log.info("B", .{});
+        manager.yield();
+        for (0..1_000_000_000) |_| asm volatile ("nop");
+    }
+}
+
+var manager: ProcessManager = undefined;
 
 fn kernelMain() !void {
     const bss_len = @intFromPtr(&__bss_end) - @intFromPtr(&__bss);
@@ -59,10 +80,15 @@ fn kernelMain() !void {
 
     am.enableGlobalInterrupt();
     am.enableTimerInterrupt();
-    const time = am.getTime();
-    mame.sbi.timer.set(time + 10_000_000);
+
+    manager = try ProcessManager.init(allocator);
+    try manager.spawn(@intFromPtr(&procAEntry));
+    try manager.spawn(@intFromPtr(&procBEntry));
+
     while (true) {
-        asm volatile ("wfi");
+        manager.yield();
+        for (0..1_000_000_000) |_| asm volatile ("nop");
+        log.info("Back in kernelMain", .{});
     }
 
     while (true) asm volatile ("wfi");
