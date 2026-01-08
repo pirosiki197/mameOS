@@ -120,12 +120,20 @@ fn free(_self: *anyopaque, memory: []u8, _: Alignment, _: usize) void {
     self.markNotUsed(pageId, num_pages);
 }
 
-fn resize(_: *anyopaque, _: []u8, _: Alignment, _: usize, _: usize) bool {
-    @panic("PageAllocator does not support resizing.");
+fn resize(_: *anyopaque, memory: []u8, _: Alignment, new_len: usize, _: usize) bool {
+    if (new_len <= memory.len) return true;
+
+    const current_pages = (memory.len + page_size - 1) / page_size;
+    const new_pages = (new_len + page_size - 1) / page_size;
+    return current_pages == new_pages;
 }
 
-fn remap(_: *anyopaque, _: []u8, _: Alignment, _: usize, _: usize) ?[*]u8 {
-    @panic("PageAllocator does not support remapping.");
+fn remap(self: *anyopaque, memory: []u8, alignment: Alignment, new_len: usize, ret_addr: usize) ?[*]u8 {
+    if (resize(self, memory, alignment, new_len, ret_addr)) {
+        return memory.ptr;
+    } else {
+        return null;
+    }
 }
 
 fn tobit(index: u6) u64 {
