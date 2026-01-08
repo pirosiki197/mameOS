@@ -6,6 +6,7 @@ const Allocator = std.mem.Allocator;
 const mame = @import("mame");
 const am = mame.am;
 const klog = mame.klog;
+const process = mame.process;
 const sbi = mame.sbi;
 
 const ProcessManager = mame.process.ProcessManager;
@@ -31,23 +32,17 @@ pub const panic = mame.panic.panic_fn;
 
 fn procAEntry() void {
     log.info("Starting process A", .{});
-    while (true) {
-        log.info("A", .{});
-        manager.yield();
-        for (0..1_000_000_000) |_| asm volatile ("nop");
-    }
+    log.info("A", .{});
 }
 
 fn procBEntry() void {
     log.info("Starting process B", .{});
-    while (true) {
+    for (0..3) |_| {
         log.info("B", .{});
-        manager.yield();
+        process.global_manager.yield();
         for (0..1_000_000_000) |_| asm volatile ("nop");
     }
 }
-
-var manager: ProcessManager = undefined;
 
 fn kernelMain() !void {
     const bss_len = @intFromPtr(&__bss_end) - @intFromPtr(&__bss);
@@ -81,12 +76,12 @@ fn kernelMain() !void {
     am.enableGlobalInterrupt();
     am.enableTimerInterrupt();
 
-    manager = try ProcessManager.init(allocator);
-    try manager.spawn(@intFromPtr(&procAEntry));
-    try manager.spawn(@intFromPtr(&procBEntry));
+    process.global_manager = try ProcessManager.init(allocator);
+    try process.global_manager.spawn(@intFromPtr(&procAEntry));
+    try process.global_manager.spawn(@intFromPtr(&procBEntry));
 
     while (true) {
-        manager.yield();
+        process.global_manager.yield();
         for (0..1_000_000_000) |_| asm volatile ("nop");
         log.info("Back in kernelMain", .{});
     }

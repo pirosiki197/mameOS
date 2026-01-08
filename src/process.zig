@@ -1,6 +1,9 @@
 const std = @import("std");
+const log = std.log.scoped(.process);
 const Allocator = std.mem.Allocator;
 const Alignment = std.mem.Alignment;
+
+pub var global_manager: ProcessManager = undefined;
 
 pub const ProcessManager = struct {
     allocator: Allocator,
@@ -36,7 +39,9 @@ pub const ProcessManager = struct {
         const prev = self.current;
         self.current = next;
 
-        self.run_queue.push(prev) catch unreachable;
+        if (prev.state == .runnable) {
+            self.run_queue.push(prev) catch unreachable;
+        }
 
         asm volatile ("call switchContext"
             :
@@ -67,9 +72,10 @@ pub const Process = struct {
         sp_addr -= 8 * 13;
         const sp: [*]usize = @ptrFromInt(sp_addr);
 
-        sp[0] = pc; // ra
-        for (1..13) |i| {
-            sp[i] = 0; // s0 - s11
+        sp[0] = @intFromPtr(&processEntry); // ra
+        sp[1] = pc; // s0
+        for (2..13) |i| {
+            sp[i] = 0; // s1 - s11
         }
 
         proc.* = .{
@@ -81,6 +87,21 @@ pub const Process = struct {
         return proc;
     }
 };
+
+fn processEntry() callconv(.naked) noreturn {
+    asm volatile (
+        \\jalr (s0)
+        \\
+        \\call processExit
+    );
+}
+
+export fn processExit() void {
+    log.info("process exiting...", .{});
+    const proc = global_manager.current;
+    proc.state = .unused;
+    global_manager.yield();
+}
 
 export fn switchContext(prev_sp: *usize, next_sp: *usize) callconv(.naked) void {
     _ = prev_sp;
