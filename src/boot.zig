@@ -8,6 +8,7 @@ const am = mame.am;
 const klog = mame.klog;
 const process = mame.process;
 const sbi = mame.sbi;
+const timer = mame.timer;
 
 const ProcessManager = mame.process.ProcessManager;
 const Permission = mame.page.Permission;
@@ -32,14 +33,17 @@ pub const panic = mame.panic.panic_fn;
 
 fn procAEntry() void {
     log.info("Starting process A", .{});
-    log.info("A", .{});
+    while (true) {
+        log.info("A", .{});
+        process.sleep(30_000_000);
+    }
 }
 
 fn procBEntry() void {
     log.info("Starting process B", .{});
     while (true) {
         log.info("B", .{});
-        for (0..1_000_000_000) |_| asm volatile ("nop");
+        process.sleep(10_000_000);
     }
 }
 
@@ -72,6 +76,8 @@ fn kernelMain() !void {
 
     log.info("Mapped kernel memory", .{});
 
+    timer.init(allocator);
+
     am.enableGlobalInterrupt();
     am.enableTimerInterrupt();
     sbi.timer.set(am.getTime() + 100_000);
@@ -79,11 +85,6 @@ fn kernelMain() !void {
     try process.init(allocator);
     try process.global_manager.spawn(@intFromPtr(&procAEntry));
     try process.global_manager.spawn(@intFromPtr(&procBEntry));
-
-    while (true) {
-        for (0..100_000_000) |_| asm volatile ("nop");
-        log.info("Back in kernelMain", .{});
-    }
 
     while (true) asm volatile ("wfi");
 }

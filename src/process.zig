@@ -5,6 +5,7 @@ const Alignment = std.mem.Alignment;
 
 const mame = @import("mame");
 const am = mame.am;
+const timer = mame.timer;
 const TrapFrame = mame.trap.TrapFrame;
 
 pub var global_manager: ProcessManager = undefined;
@@ -69,6 +70,7 @@ pub const Process = struct {
     const State = enum {
         unused,
         runnable,
+        sleeping,
     };
 
     fn new(allocator: Allocator, pid: u32, pc: usize) !*Self {
@@ -164,6 +166,18 @@ export fn switchContext(prev_sp: *usize, next_sp: *usize) callconv(.naked) void 
     );
 }
 
+pub fn sleep(ticks: u64) void {
+    const proc = global_manager.current;
+    const now = am.getTime();
+
+    timer.global_manager.addTimer(now + ticks, proc) catch |err| {
+        log.err("failed to add timer: {}", .{err});
+        return;
+    };
+    proc.state = .sleeping;
+    global_manager.yield();
+}
+
 fn Queue(T: type) type {
     return struct {
         allocator: Allocator,
@@ -188,7 +202,7 @@ fn Queue(T: type) type {
             self.allocator.free(self.data);
         }
 
-        fn push(self: *Self, v: T) !void {
+        pub fn push(self: *Self, v: T) !void {
             if (self.size == self.data.len) {
                 const new_data = try self.allocator.alloc(T, 2 * self.data.len);
                 const first_len = self.data.len - self._head;

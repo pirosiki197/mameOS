@@ -98,8 +98,10 @@ export fn handleTrap(frame: *TrapFrame) void {
             log.debug("Tick!", .{});
             const time = am.getTime();
             mame.sbi.timer.set(time + 100_000);
+
+            timer.global_manager.tick(time);
+
             process.global_manager.yield();
-            // timer.global_manager.tick(time);
         },
         else => {
             log.err("unexpected trap: scause={s} stval=0x{x}", .{ @tagName(scause), stval });

@@ -5,4 +5,5 @@ pub const process = @import("process.zig");
 pub const klog = @import("log.zig");
 pub const panic = @import("panic.zig");
 pub const sbi = @import("sbi.zig");
+pub const timer = @import("timer.zig");
 pub const trap = @import("trap.zig");
