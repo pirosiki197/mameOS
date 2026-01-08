@@ -37,9 +37,8 @@ fn procAEntry() void {
 
 fn procBEntry() void {
     log.info("Starting process B", .{});
-    for (0..3) |_| {
+    while (true) {
         log.info("B", .{});
-        process.global_manager.yield();
         for (0..1_000_000_000) |_| asm volatile ("nop");
     }
 }
@@ -75,14 +74,14 @@ fn kernelMain() !void {
 
     am.enableGlobalInterrupt();
     am.enableTimerInterrupt();
+    sbi.timer.set(am.getTime() + 100_000);
 
-    process.global_manager = try ProcessManager.init(allocator);
+    try process.init(allocator);
     try process.global_manager.spawn(@intFromPtr(&procAEntry));
     try process.global_manager.spawn(@intFromPtr(&procBEntry));
 
     while (true) {
-        process.global_manager.yield();
-        for (0..1_000_000_000) |_| asm volatile ("nop");
+        for (0..100_000_000) |_| asm volatile ("nop");
         log.info("Back in kernelMain", .{});
     }
 

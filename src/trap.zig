@@ -1,6 +1,11 @@
 const std = @import("std");
 const log = std.log.scoped(.trap);
 
+const mame = @import("mame");
+const am = mame.am;
+const process = mame.process;
+const timer = mame.timer;
+
 pub fn init() void {
     const addr = @intFromPtr(&trapEntry);
     asm volatile ("csrw stvec, %[trapEntry]"
@@ -36,7 +41,7 @@ const TrapCause = enum(usize) {
     _,
 };
 
-const TrapFrame = packed struct {
+pub const TrapFrame = packed struct {
     ra: usize,
     gp: usize,
     tp: usize,
@@ -67,6 +72,8 @@ const TrapFrame = packed struct {
     s9: usize,
     s10: usize,
     s11: usize,
+    sepc: usize,
+    sstatus: usize,
 
     fn dump(self: *TrapFrame) void {
         const fields = @typeInfo(TrapFrame).@"struct".fields;
@@ -88,9 +95,11 @@ export fn handleTrap(frame: *TrapFrame) void {
     );
     switch (scause) {
         .supervisor_timer_interrupt => {
-            log.info("Tick!", .{});
-            const time = @import("mame").am.getTime();
-            @import("mame").sbi.timer.set(time + 10_000_000);
+            log.debug("Tick!", .{});
+            const time = am.getTime();
+            mame.sbi.timer.set(time + 100_000);
+            process.global_manager.yield();
+            // timer.global_manager.tick(time);
         },
         else => {
             log.err("unexpected trap: scause={s} stval=0x{x}", .{ @tagName(scause), stval });
@@ -102,7 +111,7 @@ export fn handleTrap(frame: *TrapFrame) void {
 
 fn trapEntry() align(4) callconv(.naked) void {
     asm volatile (
-        \\addi sp, sp, -8 * 31
+        \\addi sp, sp, -8 * 32
         \\sd ra,  8 * 0(sp)
         \\sd gp,  8 * 1(sp)
         \\sd tp,  8 * 2(sp)
@@ -136,10 +145,14 @@ fn trapEntry() align(4) callconv(.naked) void {
         \\
         \\csrr t0, sepc
         \\sd t0, 8 * 30(sp)
+        \\csrr t0, sstatus
+        \\sd t0, 8 * 31(sp)
         \\
         \\mv a0, sp
         \\call handleTrap
         \\
+        \\.global kernel_target
+        \\kernel_target:
         \\ld ra,  8 * 0(sp)
         \\ld gp,  8 * 1(sp)
         \\ld tp,  8 * 2(sp)
@@ -173,8 +186,10 @@ fn trapEntry() align(4) callconv(.naked) void {
         \\
         \\ld t0, 8 * 30(sp)
         \\csrw sepc, t0
+        \\ld t0, 8 * 31(sp)
+        \\csrw sstatus, t0
         \\
-        \\addi sp, sp, 8 * 31
+        \\addi sp, sp, 8 * 32
         \\sret
     );
 }

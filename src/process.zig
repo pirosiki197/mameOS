@@ -3,7 +3,15 @@ const log = std.log.scoped(.process);
 const Allocator = std.mem.Allocator;
 const Alignment = std.mem.Alignment;
 
+const mame = @import("mame");
+const am = mame.am;
+const TrapFrame = mame.trap.TrapFrame;
+
 pub var global_manager: ProcessManager = undefined;
+
+pub fn init(allocator: Allocator) !void {
+    global_manager = try .init(allocator);
+}
 
 pub const ProcessManager = struct {
     allocator: Allocator,
@@ -12,7 +20,7 @@ pub const ProcessManager = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator) !ProcessManager {
+    fn init(allocator: Allocator) !ProcessManager {
         const boot_proc = try allocator.create(Process);
         boot_proc.* = .{
             .pid = 0,
@@ -66,16 +74,22 @@ pub const Process = struct {
     fn new(allocator: Allocator, pid: u32, pc: usize) !*Self {
         const proc = try allocator.create(Self);
         const stack = try allocator.alignedAlloc(u8, Alignment.fromByteUnits(4096), 8192);
-
         var sp_addr = @intFromPtr(stack.ptr) + stack.len;
-        sp_addr &= ~@as(usize, 15); // 16 byte alignment
+
+        sp_addr -= @sizeOf(TrapFrame);
+        var frame: *TrapFrame = @ptrFromInt(sp_addr);
+        frame.ra = @intFromPtr(&processExit);
+        frame.sstatus = @bitCast(am.Sstatus{
+            .spie = true,
+            .spp = 1,
+        });
+        frame.sepc = pc;
+
         sp_addr -= 8 * 13;
         const sp: [*]usize = @ptrFromInt(sp_addr);
-
-        sp[0] = @intFromPtr(&processEntry); // ra
-        sp[1] = pc; // s0
-        for (2..13) |i| {
-            sp[i] = 0; // s1 - s11
+        sp[0] = @intFromPtr(&forkret);
+        for (1..13) |i| {
+            sp[i] = 0; // s0 - s11
         }
 
         proc.* = .{
@@ -88,6 +102,12 @@ pub const Process = struct {
     }
 };
 
+fn forkret() callconv(.naked) void {
+    asm volatile (
+        \\j kernel_target
+    );
+}
+
 fn processEntry() callconv(.naked) noreturn {
     asm volatile (
         \\jalr (s0)
@@ -96,7 +116,7 @@ fn processEntry() callconv(.naked) noreturn {
     );
 }
 
-export fn processExit() void {
+fn processExit() void {
     log.info("process exiting...", .{});
     const proc = global_manager.current;
     proc.state = .unused;
