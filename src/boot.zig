@@ -33,7 +33,7 @@ pub const panic = mame.panic.panic_fn;
 
 fn procAEntry() void {
     log.info("Starting process A", .{});
-    while (true) {
+    for (0..3) |_| {
         log.info("A", .{});
         process.sleep(30_000_000);
     }

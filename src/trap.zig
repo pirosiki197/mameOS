@@ -95,7 +95,6 @@ export fn handleTrap(frame: *TrapFrame) void {
     );
     switch (scause) {
         .supervisor_timer_interrupt => {
-            log.debug("Tick!", .{});
             const time = am.getTime();
             mame.sbi.timer.set(time + 100_000);
 

@@ -18,6 +18,7 @@ pub const ProcessManager = struct {
     allocator: Allocator,
     run_queue: Queue(*Process),
     current: *Process,
+    last_proc: ?*Process = null,
 
     const Self = @This();
 
@@ -38,7 +39,8 @@ pub const ProcessManager = struct {
 
     pub fn spawn(self: *Self, pc: usize) !void {
         const pid = 1;
-        const proc = try Process.new(self.allocator, pid, pc);
+        const proc = try self.allocator.create(Process);
+        proc.* = try Process.init(self.allocator, pid, pc);
         try self.run_queue.push(proc);
     }
 
@@ -46,6 +48,7 @@ pub const ProcessManager = struct {
         const next = self.run_queue.pop() orelse return;
 
         const prev = self.current;
+        self.last_proc = prev;
         self.current = next;
 
         if (prev.state == .runnable) {
@@ -57,6 +60,13 @@ pub const ProcessManager = struct {
             : [a0] "{a0}" (&prev.sp),
               [a1] "{a1}" (&next.sp),
         );
+
+        if (self.last_proc) |last_proc| {
+            if (last_proc.state == .unused) {
+                last_proc.deinit(self.allocator);
+                self.allocator.destroy(last_proc);
+            }
+        }
     }
 };
 
@@ -73,8 +83,7 @@ pub const Process = struct {
         sleeping,
     };
 
-    fn new(allocator: Allocator, pid: u32, pc: usize) !*Self {
-        const proc = try allocator.create(Self);
+    fn init(allocator: Allocator, pid: u32, pc: usize) !Self {
         const stack = try allocator.alignedAlloc(u8, Alignment.fromByteUnits(4096), 8192);
         var sp_addr = @intFromPtr(stack.ptr) + stack.len;
 
@@ -94,13 +103,16 @@ pub const Process = struct {
             sp[i] = 0; // s0 - s11
         }
 
-        proc.* = .{
+        return .{
             .pid = pid,
             .state = .runnable,
             .sp = sp_addr,
             .stack = stack,
         };
-        return proc;
+    }
+
+    fn deinit(self: Self, allocator: Allocator) void {
+        allocator.free(self.stack);
     }
 };
 
@@ -204,7 +216,7 @@ fn Queue(T: type) type {
 
         pub fn push(self: *Self, v: T) !void {
             if (self.size == self.data.len) {
-                const new_data = try self.allocator.alloc(T, 2 * self.data.len);
+                const new_data = try self.allocator.realloc(self.data, 2 * self.data.len);
                 const first_len = self.data.len - self._head;
                 @memcpy(new_data[0..first_len], self.data[self._head..self.data.len]);
                 const second_len = self._head;
