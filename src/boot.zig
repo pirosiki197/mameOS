@@ -10,7 +10,7 @@ const process = mame.process;
 const sbi = mame.sbi;
 const timer = mame.timer;
 
-const ProcessManager = mame.process.ProcessManager;
+const ProcessManager = mame.process.Scheduler;
 const Permission = mame.page.Permission;
 
 extern const __kernel_base: anyopaque;
@@ -83,8 +83,8 @@ fn kernelMain() !void {
     sbi.timer.set(am.getTime() + 100_000);
 
     try process.init(allocator);
-    try process.global_manager.spawn(@intFromPtr(&procAEntry));
-    try process.global_manager.spawn(@intFromPtr(&procBEntry));
+    try process.global_scheduler.spawn(@intFromPtr(&procAEntry));
+    try process.global_scheduler.spawn(@intFromPtr(&procBEntry));
 
     while (true) asm volatile ("wfi");
 }

@@ -8,47 +8,59 @@ const am = mame.am;
 const timer = mame.timer;
 const TrapFrame = mame.trap.TrapFrame;
 
-pub var global_manager: ProcessManager = undefined;
+pub var global_scheduler: Scheduler = undefined;
 
 pub fn init(allocator: Allocator) !void {
-    global_manager = try .init(allocator);
+    global_scheduler = try .init(allocator);
 }
 
-pub const ProcessManager = struct {
+pub const Scheduler = struct {
     allocator: Allocator,
-    run_queue: Queue(*Process),
-    current: *Process,
-    last_proc: ?*Process = null,
+    run_queue: Queue(*Thread),
+    current: *Thread,
+    last_thread: ?*Thread = null,
+    next_pid: u32 = 1,
+    next_tid: u32 = 1,
 
     const Self = @This();
 
-    fn init(allocator: Allocator) !ProcessManager {
+    fn init(allocator: Allocator) !Scheduler {
         const boot_proc = try allocator.create(Process);
         boot_proc.* = .{
             .pid = 0,
+        };
+        const thread = try allocator.create(Thread);
+        thread.* = .{
+            .tid = 0,
+            .proc = boot_proc,
             .state = .runnable,
             .sp = 0,
-            .stack = &[_]u8{},
+            .kernel_stack = &[_]u8{},
         };
         return .{
             .allocator = allocator,
-            .run_queue = try Queue(*Process).init(allocator),
-            .current = boot_proc,
+            .run_queue = try .init(allocator),
+            .current = thread,
         };
     }
 
     pub fn spawn(self: *Self, pc: usize) !void {
-        const pid = 1;
         const proc = try self.allocator.create(Process);
-        proc.* = try Process.init(self.allocator, pid, pc);
-        try self.run_queue.push(proc);
+        proc.* = try .init(self.next_pid);
+        self.next_pid += 1;
+
+        const thread = try self.allocator.create(Thread);
+        thread.* = try .init(self.allocator, self.next_tid, proc, pc);
+        self.next_tid += 1;
+
+        try self.run_queue.push(thread);
     }
 
     pub fn yield(self: *Self) void {
         const next = self.run_queue.pop() orelse return;
 
         const prev = self.current;
-        self.last_proc = prev;
+        self.last_thread = prev;
         self.current = next;
 
         if (prev.state == .runnable) {
@@ -61,10 +73,11 @@ pub const ProcessManager = struct {
               [a1] "{a1}" (&next.sp),
         );
 
-        if (self.last_proc) |last_proc| {
-            if (last_proc.state == .unused) {
-                last_proc.deinit(self.allocator);
-                self.allocator.destroy(last_proc);
+        if (self.last_thread) |last_thread| {
+            if (last_thread.state == .unused) {
+                last_thread.deinit(self.allocator);
+                self.allocator.destroy(last_thread.proc);
+                self.allocator.destroy(last_thread);
             }
         }
     }
@@ -72,9 +85,26 @@ pub const ProcessManager = struct {
 
 pub const Process = struct {
     pid: u32,
+
+    const Self = @This();
+
+    fn init(pid: u32) !Self {
+        return .{ .pid = pid };
+    }
+
+    fn deinit(self: Self, allocator: Allocator) void {
+        _ = self;
+        _ = allocator;
+        // do nothing
+    }
+};
+
+pub const Thread = struct {
+    tid: usize,
+    proc: *Process,
     state: State,
     sp: usize,
-    stack: []u8,
+    kernel_stack: []u8,
 
     const Self = @This();
     const State = enum {
@@ -83,7 +113,7 @@ pub const Process = struct {
         sleeping,
     };
 
-    fn init(allocator: Allocator, pid: u32, pc: usize) !Self {
+    fn init(allocator: Allocator, tid: usize, proc: *Process, pc: usize) !Self {
         const stack = try allocator.alignedAlloc(u8, Alignment.fromByteUnits(4096), 8192);
         var sp_addr = @intFromPtr(stack.ptr) + stack.len;
 
@@ -104,15 +134,16 @@ pub const Process = struct {
         }
 
         return .{
-            .pid = pid,
+            .tid = tid,
+            .proc = proc,
             .state = .runnable,
             .sp = sp_addr,
-            .stack = stack,
+            .kernel_stack = stack,
         };
     }
 
     fn deinit(self: Self, allocator: Allocator) void {
-        allocator.free(self.stack);
+        allocator.free(self.kernel_stack);
     }
 };
 
@@ -132,9 +163,9 @@ fn processEntry() callconv(.naked) noreturn {
 
 fn processExit() void {
     log.info("process exiting...", .{});
-    const proc = global_manager.current;
+    const proc = global_scheduler.current;
     proc.state = .unused;
-    global_manager.yield();
+    global_scheduler.yield();
 }
 
 export fn switchContext(prev_sp: *usize, next_sp: *usize) callconv(.naked) void {
@@ -179,15 +210,15 @@ export fn switchContext(prev_sp: *usize, next_sp: *usize) callconv(.naked) void 
 }
 
 pub fn sleep(ticks: u64) void {
-    const proc = global_manager.current;
+    const thread = global_scheduler.current;
     const now = am.getTime();
 
-    timer.global_manager.addTimer(now + ticks, proc) catch |err| {
+    timer.global_manager.addTimer(now + ticks, thread) catch |err| {
         log.err("failed to add timer: {}", .{err});
         return;
     };
-    proc.state = .sleeping;
-    global_manager.yield();
+    thread.state = .sleeping;
+    global_scheduler.yield();
 }
 
 fn Queue(T: type) type {

@@ -100,7 +100,7 @@ export fn handleTrap(frame: *TrapFrame) void {
 
             timer.global_manager.tick(time);
 
-            process.global_manager.yield();
+            process.global_scheduler.yield();
         },
         else => {
             log.err("unexpected trap: scause={s} stval=0x{x}", .{ @tagName(scause), stval });

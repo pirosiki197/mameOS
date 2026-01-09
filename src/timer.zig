@@ -5,6 +5,7 @@ const Allocator = std.mem.Allocator;
 const mame = @import("mame");
 const process = mame.process;
 const Process = process.Process;
+const Thread = process.Thread;
 
 pub var global_manager: TimerManager = undefined;
 
@@ -14,7 +15,7 @@ pub fn init(allocator: Allocator) void {
 
 pub const TimerEvent = struct {
     expires: u64,
-    process: ?*Process,
+    thread: ?*Thread,
     callback: ?*const fn () void = null,
 
     const Self = @This();
@@ -36,10 +37,10 @@ pub const TimerManager = struct {
         };
     }
 
-    pub fn addTimer(self: *Self, expires: u64, proc: *Process) !void {
+    pub fn addTimer(self: *Self, expires: u64, thread: *Thread) !void {
         try self.events.add(.{
             .expires = expires,
-            .process = proc,
+            .thread = thread,
         });
     }
 
@@ -48,9 +49,9 @@ pub const TimerManager = struct {
             if (event.expires > current_time) break;
             const expired = self.events.remove();
 
-            if (expired.process) |proc| {
+            if (expired.thread) |proc| {
                 proc.state = .runnable;
-                process.global_manager.run_queue.push(proc) catch unreachable;
+                process.global_scheduler.run_queue.push(proc) catch unreachable;
             }
 
             if (expired.callback) |callback| {
