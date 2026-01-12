@@ -1,3 +1,6 @@
+const mame = @import("mame");
+const va2pa = mame.page.va2pa;
+
 pub const SbiError = error{
     failed,
     not_supported,
@@ -42,7 +45,7 @@ const ecall = struct {
         );
     }
 
-    inline fn threeArgs(eid: EID, fid: u32, arg0: u32, arg1: u32, arg2: u32) SbiError!i32 {
+    inline fn threeArgs(eid: EID, fid: usize, arg0: u32, arg1: u32, arg2: u32) SbiError!i32 {
         var err: i32 = undefined;
         var value: i32 = undefined;
         asm volatile ("ecall"
@@ -50,9 +53,9 @@ const ecall = struct {
               [value] "={a1}" (value),
             : [eid] "{a7}" (@intFromEnum(eid)),
               [fid] "{a6}" (fid),
-              [arg0] "{a0}" (arg0),
-              [arg1] "{a1}" (arg1),
-              [arg2] "{a2}" (arg2),
+              [arg0] "{a0}" (@as(usize, arg0)),
+              [arg1] "{a1}" (@as(usize, arg1)),
+              [arg2] "{a2}" (@as(usize, arg2)),
         );
         return convertError(err, value);
     }
@@ -66,12 +69,13 @@ pub const console = struct {
     };
 
     pub fn write(b: []const u8) SbiError!usize {
+        const paddr = va2pa(@intFromPtr(b.ptr));
         const ret = try ecall.threeArgs(
             .dbcn,
             @intFromEnum(FID.write),
             @intCast(b.len),
-            @truncate(@intFromPtr(b.ptr)),
-            @truncate(@intFromPtr(b.ptr) >> 32),
+            @intCast(paddr & 0xffff_ffff),
+            @intCast(paddr >> 32),
         );
         return @intCast(ret);
     }

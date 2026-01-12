@@ -5,6 +5,20 @@ const am = mame.am;
 const Allocator = std.mem.Allocator;
 const Alignment = std.mem.Alignment;
 
+pub const KERNEL_BIN_OFFSET = 0xFFFF_FFFF_0000_0000;
+pub const DIRECT_MAP_OFFSET = 0xFFFF_FFC0_0000_0000;
+
+pub fn pa2va(paddr: usize) usize {
+    return paddr +% DIRECT_MAP_OFFSET;
+}
+pub fn va2pa(vaddr: usize) usize {
+    const offset: usize = if (vaddr >= KERNEL_BIN_OFFSET) KERNEL_BIN_OFFSET else DIRECT_MAP_OFFSET;
+    return vaddr -% offset;
+}
+pub fn symbol2pa(vaddr: usize) usize {
+    return vaddr -% KERNEL_BIN_OFFSET;
+}
+
 const Level = enum { lv2, lv1, lv0 };
 pub const Permission = enum(u3) {
     read_only = 0b001,
@@ -51,7 +65,7 @@ fn EntryBase(table_level: Level) type {
         ppn: u44,
         _reserved: u10 = 0,
 
-        fn newMapPage(paddr: usize, valid: bool, perm: Permission) Self {
+        pub fn newMapPage(paddr: usize, valid: bool, perm: Permission) Self {
             return Self{
                 .valid = valid,
                 .read = perm.read(),
@@ -64,13 +78,14 @@ fn EntryBase(table_level: Level) type {
 
         fn newMapTable(table: [*]LowerType, valid: bool) Self {
             if (level == .lv0) @compileError("Lv0 entry cannot reference a page table");
+            const paddr = va2pa(@intFromPtr(table));
             return Self{
                 .valid = valid,
                 .read = false,
                 .write = false,
                 .execute = false,
                 .user = false,
-                .ppn = @truncate(@intFromPtr(table) >> page_shift),
+                .ppn = @truncate(paddr >> page_shift),
             };
         }
 
@@ -80,7 +95,7 @@ fn EntryBase(table_level: Level) type {
     };
 }
 
-const Lv2Entry = EntryBase(.lv2);
+pub const Lv2Entry = EntryBase(.lv2);
 const Lv1Entry = EntryBase(.lv1);
 const Lv0Entry = EntryBase(.lv0);
 
@@ -100,7 +115,7 @@ pub fn map4kTo(allocator: Allocator, root_paddr: usize, vaddr: usize, paddr: usi
 pub fn setupLv2Table(allocator: Allocator) !usize {
     const page = try allocator.alignedAlloc(Lv2Entry, .fromByteUnits(page_size), num_table_entries);
     @memset(page, std.mem.zeroes(Lv2Entry));
-    return @intFromPtr(page.ptr);
+    return va2pa(@intFromPtr(page.ptr));
 }
 
 pub fn enablePaging(root_paddr: usize) void {
@@ -124,7 +139,7 @@ fn getEntry(T: type, vaddr: usize, paddr: usize) *T {
 }
 
 fn getTable(T: type, paddr: usize) []T {
-    const ptr: [*]T = @ptrFromInt(paddr & ~page_mask);
+    const ptr: [*]T = @ptrFromInt(pa2va(paddr & ~page_mask));
     return ptr[0..num_table_entries];
 }
 
