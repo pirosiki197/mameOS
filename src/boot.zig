@@ -96,10 +96,13 @@ fn kernelMain() !void {
     sbi.timer.set(am.getTime() + 100_000);
 
     try process.init(allocator);
-    try process.global_scheduler.spawn(@intFromPtr(&procAEntry));
-    try process.global_scheduler.spawn(@intFromPtr(&procBEntry));
+    try process.global_manager.spawn(@intFromPtr(&procAEntry));
+    try process.global_manager.spawn(@intFromPtr(&procBEntry));
 
-    while (true) asm volatile ("wfi");
+    while (true) {
+        asm volatile ("wfi");
+        process.global_manager.cleanupZombies();
+    }
 }
 
 fn mapRange(allocator: Allocator, root_paddr: usize, start_paddr: usize, end_paddr: usize, perm: Permission) !void {

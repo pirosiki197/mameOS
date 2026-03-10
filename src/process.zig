@@ -8,63 +8,123 @@ const am = mame.am;
 const timer = mame.timer;
 const TrapFrame = mame.trap.TrapFrame;
 
+pub var global_manager: ProcessManager = undefined;
 pub var global_scheduler: Scheduler = undefined;
 
 pub fn init(allocator: Allocator) !void {
-    global_scheduler = try .init(allocator);
+    const boot_proc = try allocator.create(Process);
+    boot_proc.* = .{
+        .pid = 0,
+    };
+    const thread = try allocator.create(Thread);
+    thread.* = .{
+        .tid = 0,
+        .proc = boot_proc,
+        .state = .runnable,
+        .sp = 0,
+        .kernel_stack = &[_]u8{},
+    };
+
+    global_manager = .init(allocator);
+    global_scheduler = .init(thread);
 }
 
-pub const Scheduler = struct {
+pub const ProcessManager = struct {
     allocator: Allocator,
-    run_queue: Queue(*Thread),
-    current: *Thread,
-    last_thread: ?*Thread = null,
-    next_pid: u32 = 1,
-    next_tid: u32 = 1,
+    processes: std.DoublyLinkedList = .{},
+    zombie_threads: std.DoublyLinkedList = .{},
+    next_pid: u32 = 0,
+    next_tid: u32 = 0,
 
     const Self = @This();
 
-    fn init(allocator: Allocator) !Scheduler {
-        const boot_proc = try allocator.create(Process);
-        boot_proc.* = .{
-            .pid = 0,
-        };
-        const thread = try allocator.create(Thread);
-        thread.* = .{
-            .tid = 0,
-            .proc = boot_proc,
-            .state = .runnable,
-            .sp = 0,
-            .kernel_stack = &[_]u8{},
-        };
+    pub fn init(allocator: Allocator) Self {
         return .{
             .allocator = allocator,
-            .run_queue = try .init(allocator),
-            .current = thread,
         };
     }
 
     pub fn spawn(self: *Self, pc: usize) !void {
+        const proc = try self.createProcess();
+
+        const thread = try self.createThread(proc, pc);
+
+        global_scheduler.push(thread);
+    }
+
+    fn createProcess(self: *Self) !*Process {
         const proc = try self.allocator.create(Process);
-        proc.* = try .init(self.next_pid);
-        self.next_pid += 1;
+        proc.pid = self.allocPid();
+        self.processes.append(&proc.node);
+        return proc;
+    }
 
+    fn createThread(self: *Self, proc: *Process, pc: usize) !*Thread {
         const thread = try self.allocator.create(Thread);
-        thread.* = try .init(self.allocator, self.next_tid, proc, pc);
-        self.next_tid += 1;
+        thread.* = try Thread.init(self.allocator, self.allocTid(), proc, pc);
+        proc.threads.append(&thread.proc_node);
+        return thread;
+    }
 
-        try self.run_queue.push(thread);
+    fn markAsZombie(self: *Self, thread: *Thread) void {
+        thread.state = .zombie;
+        self.zombie_threads.append(&thread.queue_node);
+    }
+
+    pub fn cleanupZombies(self: *Self) void {
+        while (self.zombie_threads.pop()) |node| {
+            const thread: *Thread = @fieldParentPtr("queue_node", node);
+            const proc = thread.proc;
+
+            proc.threads.remove(&thread.proc_node);
+            thread.deinit(self.allocator);
+            self.allocator.destroy(thread);
+
+            if (proc.threads.first == null) {
+                proc.state = .zombie;
+                // TODO: cleanup process memory map
+            }
+        }
+    }
+
+    fn allocPid(self: *Self) u32 {
+        const pid = self.next_pid;
+        self.next_pid += 1;
+        return pid;
+    }
+    fn allocTid(self: *Self) u32 {
+        const tid = self.next_tid;
+        self.next_tid += 1;
+        return tid;
+    }
+};
+
+pub const Scheduler = struct {
+    run_queue: std.DoublyLinkedList,
+    current: *Thread,
+
+    const Self = @This();
+
+    fn init(initial_thread: *Thread) Scheduler {
+        return .{
+            .run_queue = .{},
+            .current = initial_thread,
+        };
+    }
+
+    pub fn push(self: *Self, thread: *Thread) void {
+        self.run_queue.append(&thread.queue_node);
     }
 
     pub fn yield(self: *Self) void {
-        const next = self.run_queue.pop() orelse return;
+        const next_node = self.run_queue.popFirst() orelse return;
+        const next: *Thread = @fieldParentPtr("queue_node", next_node);
 
         const prev = self.current;
-        self.last_thread = prev;
         self.current = next;
 
         if (prev.state == .runnable) {
-            self.run_queue.push(prev) catch unreachable;
+            self.run_queue.append(&prev.queue_node);
         }
 
         asm volatile ("call switchContext"
@@ -72,30 +132,23 @@ pub const Scheduler = struct {
             : [a0] "{a0}" (&prev.sp),
               [a1] "{a1}" (&next.sp),
         );
-
-        if (self.last_thread) |last_thread| {
-            if (last_thread.state == .unused) {
-                last_thread.deinit(self.allocator);
-                self.allocator.destroy(last_thread.proc);
-                self.allocator.destroy(last_thread);
-            }
-        }
     }
 };
 
 pub const Process = struct {
     pid: u32,
+    threads: std.DoublyLinkedList = .{},
+    state: State = .live,
+    node: std.DoublyLinkedList.Node = .{},
 
     const Self = @This();
+    const State = enum {
+        zombie,
+        live,
+    };
 
     fn init(pid: u32) !Self {
         return .{ .pid = pid };
-    }
-
-    fn deinit(self: Self, allocator: Allocator) void {
-        _ = self;
-        _ = allocator;
-        // do nothing
     }
 };
 
@@ -105,12 +158,15 @@ pub const Thread = struct {
     state: State,
     sp: usize,
     kernel_stack: []u8,
+    queue_node: std.DoublyLinkedList.Node = .{},
+    proc_node: std.DoublyLinkedList.Node = .{},
 
     const Self = @This();
     const State = enum {
         unused,
         runnable,
         sleeping,
+        zombie,
     };
 
     fn init(allocator: Allocator, tid: usize, proc: *Process, pc: usize) !Self {
@@ -162,9 +218,8 @@ fn processEntry() callconv(.naked) noreturn {
 }
 
 fn processExit() void {
-    log.info("process exiting...", .{});
-    const proc = global_scheduler.current;
-    proc.state = .unused;
+    const thread = global_scheduler.current;
+    global_manager.markAsZombie(thread);
     global_scheduler.yield();
 }
 
@@ -219,61 +274,4 @@ pub fn sleep(ticks: u64) void {
     };
     thread.state = .sleeping;
     global_scheduler.yield();
-}
-
-fn Queue(T: type) type {
-    return struct {
-        allocator: Allocator,
-        data: []T,
-        _head: usize,
-        _tail: usize,
-        size: usize,
-
-        const Self = @This();
-
-        fn init(allocator: Allocator) !Self {
-            return .{
-                .allocator = allocator,
-                .data = try allocator.alloc(T, 4),
-                ._head = 0,
-                ._tail = 0,
-                .size = 0,
-            };
-        }
-
-        fn deinit(self: *Self) void {
-            self.allocator.free(self.data);
-        }
-
-        pub fn push(self: *Self, v: T) !void {
-            if (self.size == self.data.len) {
-                const new_data = try self.allocator.alloc(T, 2 * self.data.len);
-                const first_len = self.data.len - self._head;
-                @memcpy(new_data[0..first_len], self.data[self._head..self.data.len]);
-                const second_len = self._head;
-                @memcpy(new_data[first_len .. first_len + second_len], self.data[0..second_len]);
-
-                self._head = 0;
-                self._tail = self.data.len;
-                self.allocator.free(self.data);
-                self.data = new_data;
-            }
-            self.size += 1;
-            self.data[self._tail] = v;
-            self._tail = (self._tail + 1) % self.data.len;
-        }
-
-        fn pop(self: *Self) ?T {
-            if (self.size == 0) return null;
-            const res = self.data[self._head];
-            self._head = (self._head + 1) % self.data.len;
-            self.size -= 1;
-            return res;
-        }
-
-        fn peek(self: *Self) ?T {
-            if (self.size == 0) return null;
-            return self.data[self._head];
-        }
-    };
 }

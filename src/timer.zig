@@ -51,7 +51,7 @@ pub const TimerManager = struct {
 
             if (expired.thread) |proc| {
                 proc.state = .runnable;
-                process.global_scheduler.run_queue.push(proc) catch unreachable;
+                process.global_scheduler.push(proc);
             }
 
             if (expired.callback) |callback| {
