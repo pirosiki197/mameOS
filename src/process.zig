@@ -6,12 +6,13 @@ const Alignment = std.mem.Alignment;
 const mame = @import("mame");
 const am = mame.am;
 const timer = mame.timer;
+const PageAllocator = mame.mem.PageAllocator;
 const TrapFrame = mame.trap.TrapFrame;
 
 pub var global_manager: ProcessManager = undefined;
 pub var global_scheduler: Scheduler = undefined;
 
-pub fn init(allocator: Allocator) !void {
+pub fn init(page_allocator: *PageAllocator, allocator: Allocator) !void {
     const boot_proc = try allocator.create(Process);
     boot_proc.* = .{
         .pid = 0,
@@ -25,11 +26,12 @@ pub fn init(allocator: Allocator) !void {
         .kernel_stack = &[_]u8{},
     };
 
-    global_manager = .init(allocator);
+    global_manager = .init(page_allocator, allocator);
     global_scheduler = .init(thread);
 }
 
 pub const ProcessManager = struct {
+    page_allocator: *PageAllocator,
     allocator: Allocator,
     processes: std.DoublyLinkedList = .{},
     zombie_threads: std.DoublyLinkedList = .{},
@@ -38,8 +40,9 @@ pub const ProcessManager = struct {
 
     const Self = @This();
 
-    pub fn init(allocator: Allocator) Self {
+    pub fn init(page_allocator: *PageAllocator, allocator: Allocator) Self {
         return .{
+            .page_allocator = page_allocator,
             .allocator = allocator,
         };
     }
@@ -54,7 +57,7 @@ pub const ProcessManager = struct {
 
     fn createProcess(self: *Self) !*Process {
         const proc = try self.allocator.create(Process);
-        proc.pid = self.allocPid();
+        proc.* = Process.init(self.allocPid());
         self.processes.append(&proc.node);
         return proc;
     }
@@ -147,8 +150,10 @@ pub const Process = struct {
         live,
     };
 
-    fn init(pid: u32) !Self {
-        return .{ .pid = pid };
+    fn init(pid: u32) Self {
+        return .{
+            .pid = pid,
+        };
     }
 };
 

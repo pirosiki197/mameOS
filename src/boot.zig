@@ -14,6 +14,8 @@ const va2pa = mame.page.va2pa;
 const pa2va = mame.page.pa2va;
 const symbol2pa = mame.page.symbol2pa;
 
+const PageAllocator = mame.mem.PageAllocator;
+const SlabAllocator = mame.mem.SlabAllocator;
 const Lv2Entry = mame.page.Lv2Entry;
 const ProcessManager = mame.process.Scheduler;
 const Permission = mame.page.Permission;
@@ -71,20 +73,23 @@ fn kernelMain() !void {
     const free_ram_end_addr = free_ram_addr + memory_len;
     const memory: [*]align(4096) u8 = @ptrFromInt(free_ram_addr);
 
-    var page_allocator = mame.mem.initPageAllocator(memory[0..memory_len]);
-    const allocator = page_allocator.allocator();
+    var page_allocator = PageAllocator.init(memory[0..memory_len]);
+    const allocator = blk: {
+        var slab_allocator = SlabAllocator.init(&page_allocator);
+        break :blk slab_allocator.allocator();
+    };
 
-    const root_paddr = try mame.page.setupLv2Table(allocator);
+    const root_paddr = try mame.page.setupLv2Table(&page_allocator);
     // .text (read_execute)
-    try mapRange(allocator, root_paddr, @intFromPtr(&__text_start), @intFromPtr(&__text_end), .read_execute);
+    try mapRange(&page_allocator, root_paddr, @intFromPtr(&__text_start), @intFromPtr(&__text_end), .read_execute);
     // .rodata (read_only)
-    try mapRange(allocator, root_paddr, @intFromPtr(&__rodata_start), @intFromPtr(&__rodata_end), .read_only);
+    try mapRange(&page_allocator, root_paddr, @intFromPtr(&__rodata_start), @intFromPtr(&__rodata_end), .read_only);
     // .data & .bss (read_write)
-    try mapRange(allocator, root_paddr, @intFromPtr(&__data_start), @intFromPtr(&__data_end), .read_write);
+    try mapRange(&page_allocator, root_paddr, @intFromPtr(&__data_start), @intFromPtr(&__data_end), .read_write);
     // stack (read_write)
-    try mapRange(allocator, root_paddr, @intFromPtr(&__stack_start), @intFromPtr(&__stack_end), .read_write);
+    try mapRange(&page_allocator, root_paddr, @intFromPtr(&__stack_start), @intFromPtr(&__stack_end), .read_write);
     // ram (read_write)
-    try mapRange(allocator, root_paddr, free_ram_addr, free_ram_end_addr, .read_write);
+    try mapRange(&page_allocator, root_paddr, free_ram_addr, free_ram_end_addr, .read_write);
     mame.page.enablePaging(root_paddr);
 
     log.info("Mapped kernel memory", .{});
@@ -95,7 +100,7 @@ fn kernelMain() !void {
     am.enableTimerInterrupt();
     sbi.timer.set(am.getTime() + 100_000);
 
-    try process.init(allocator);
+    try process.init(&page_allocator, allocator);
     try process.global_manager.spawn(@intFromPtr(&procAEntry));
     try process.global_manager.spawn(@intFromPtr(&procBEntry));
 
@@ -105,7 +110,7 @@ fn kernelMain() !void {
     }
 }
 
-fn mapRange(allocator: Allocator, root_paddr: usize, start_paddr: usize, end_paddr: usize, perm: Permission) !void {
+fn mapRange(allocator: *PageAllocator, root_paddr: usize, start_paddr: usize, end_paddr: usize, perm: Permission) !void {
     var vaddr = start_paddr;
     while (vaddr < end_paddr) : (vaddr += 4096) {
         try mame.page.map4kTo(allocator, root_paddr, vaddr, va2pa(vaddr), perm);

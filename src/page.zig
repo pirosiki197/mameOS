@@ -2,8 +2,10 @@ const std = @import("std");
 const mame = @import("mame");
 const am = mame.am;
 
-const Allocator = std.mem.Allocator;
+const PageAllocator = mame.mem.PageAllocator;
 const Alignment = std.mem.Alignment;
+const Phys = mame.mem.Phys;
+const Virt = mame.mem.Virt;
 
 pub const KERNEL_BIN_OFFSET = 0xFFFF_FFFF_0000_0000;
 pub const DIRECT_MAP_OFFSET = 0xFFFF_FFC0_0000_0000;
@@ -76,16 +78,15 @@ fn EntryBase(table_level: Level) type {
             };
         }
 
-        fn newMapTable(table: [*]LowerType, valid: bool) Self {
+        fn newMapTable(table_paddr: Phys, valid: bool) Self {
             if (level == .lv0) @compileError("Lv0 entry cannot reference a page table");
-            const paddr = va2pa(@intFromPtr(table));
             return Self{
                 .valid = valid,
                 .read = false,
                 .write = false,
                 .execute = false,
                 .user = false,
-                .ppn = @truncate(paddr >> page_shift),
+                .ppn = @truncate(table_paddr >> page_shift),
             };
         }
 
@@ -99,7 +100,7 @@ pub const Lv2Entry = EntryBase(.lv2);
 const Lv1Entry = EntryBase(.lv1);
 const Lv0Entry = EntryBase(.lv0);
 
-pub fn map4kTo(allocator: Allocator, root_paddr: usize, vaddr: usize, paddr: usize, perm: Permission) !void {
+pub fn map4kTo(allocator: *PageAllocator, root_paddr: Phys, vaddr: usize, paddr: Phys, perm: Permission) !void {
     const lv2ent = getEntry(Lv2Entry, vaddr, root_paddr);
     if (!lv2ent.valid) try allocateNewTable(Lv2Entry, lv2ent, allocator);
 
@@ -112,13 +113,13 @@ pub fn map4kTo(allocator: Allocator, root_paddr: usize, vaddr: usize, paddr: usi
     lv0ent.* = new_lv0ent;
 }
 
-pub fn setupLv2Table(allocator: Allocator) !usize {
-    const page = try allocator.alignedAlloc(Lv2Entry, .fromByteUnits(page_size), num_table_entries);
-    @memset(page, std.mem.zeroes(Lv2Entry));
+pub fn setupLv2Table(allocator: *PageAllocator) !Phys {
+    const page = try allocator.allocPages(1);
+    @memset(page, 0);
     return va2pa(@intFromPtr(page.ptr));
 }
 
-pub fn enablePaging(root_paddr: usize) void {
+pub fn enablePaging(root_paddr: Phys) void {
     const satp = am.Satp{
         .mode = 8, // Sv39
         .ppn = @truncate(root_paddr >> page_shift),
@@ -127,7 +128,7 @@ pub fn enablePaging(root_paddr: usize) void {
     am.clearTLBCache();
 }
 
-fn getEntry(T: type, vaddr: usize, paddr: usize) *T {
+fn getEntry(T: type, vaddr: Virt, paddr: Phys) *T {
     const table = getTable(T, paddr);
     const shift = switch (T) {
         Lv2Entry => 30,
@@ -138,13 +139,13 @@ fn getEntry(T: type, vaddr: usize, paddr: usize) *T {
     return &table[(vaddr >> shift) & 0x1FF];
 }
 
-fn getTable(T: type, paddr: usize) []T {
+fn getTable(T: type, paddr: Phys) []T {
     const ptr: [*]T = @ptrFromInt(pa2va(paddr & ~page_mask));
     return ptr[0..num_table_entries];
 }
 
-fn allocateNewTable(T: type, entry: *T, allocator: Allocator) !void {
-    const page = try allocator.alignedAlloc(T.LowerType, .fromByteUnits(page_size), num_table_entries);
-    @memset(page, std.mem.zeroes(T.LowerType));
-    entry.* = T.newMapTable(page.ptr, true);
+fn allocateNewTable(T: type, entry: *T, allocator: *PageAllocator) !void {
+    const page = try allocator.allocPages(1);
+    @memset(page, 0);
+    entry.* = T.newMapTable(va2pa(@intFromPtr(page.ptr)), true);
 }
