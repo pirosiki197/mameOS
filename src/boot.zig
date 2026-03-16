@@ -16,6 +16,7 @@ const symbol2pa = mame.page.symbol2pa;
 
 const PageAllocator = mame.mem.PageAllocator;
 const SlabAllocator = mame.mem.SlabAllocator;
+const PageTable = mame.page.PageTable;
 const Lv2Entry = mame.page.Lv2Entry;
 const ProcessManager = mame.process.Scheduler;
 const Permission = mame.page.Permission;
@@ -38,7 +39,7 @@ pub const std_options = klog.default_log_options;
 pub const panic = mame.panic.panic_fn;
 
 export var boot_page_table: [512]u64 align(4096) = blk: {
-    const entry: u64 = @bitCast(Lv2Entry.newMapPage(0x8000_0000, true, .read_write_execute));
+    const entry: u64 = @bitCast(Lv2Entry.newMapPage(0x8000_0000, true, .read_write_execute, false));
     var table: [512]u64 = @splat(0);
     table[2] = entry; // 0x8000_0000
     table[258] = entry; // 0xFFFF_FFC0_8000_0000
@@ -62,36 +63,39 @@ fn procBEntry() void {
     }
 }
 
+var page_allocator: PageAllocator = undefined;
+var slab_allocator: SlabAllocator = undefined;
+
 fn kernelMain() !void {
     const bss_len = @intFromPtr(&__bss_end) - @intFromPtr(&__bss);
     @memset(@as([*]u8, @ptrCast(&__bss))[0..bss_len], 0);
 
     mame.trap.init();
 
-    const memory_len = 128 * 1024 * 1024;
+    const memory_len = 64 * 1024 * 1024;
     const free_ram_addr = pa2va(symbol2pa(@intFromPtr(&__free_ram_start)));
-    const free_ram_end_addr = free_ram_addr + memory_len;
     const memory: [*]align(4096) u8 = @ptrFromInt(free_ram_addr);
 
-    var page_allocator = PageAllocator.init(memory[0..memory_len]);
-    const allocator = blk: {
-        var slab_allocator = SlabAllocator.init(&page_allocator);
-        break :blk slab_allocator.allocator();
-    };
+    page_allocator = PageAllocator.init(memory[0..memory_len]);
+    slab_allocator = SlabAllocator.init(&page_allocator);
+    const allocator = slab_allocator.allocator();
 
-    const root_paddr = try mame.page.setupLv2Table(&page_allocator);
+    const page_table = try PageTable.new(&page_allocator);
     // .text (read_execute)
-    try mapRange(&page_allocator, root_paddr, @intFromPtr(&__text_start), @intFromPtr(&__text_end), .read_execute);
+    try mapRange(page_table, &page_allocator, @intFromPtr(&__text_start), @intFromPtr(&__text_end), .read_execute);
     // .rodata (read_only)
-    try mapRange(&page_allocator, root_paddr, @intFromPtr(&__rodata_start), @intFromPtr(&__rodata_end), .read_only);
+    try mapRange(page_table, &page_allocator, @intFromPtr(&__rodata_start), @intFromPtr(&__rodata_end), .read_only);
     // .data & .bss (read_write)
-    try mapRange(&page_allocator, root_paddr, @intFromPtr(&__data_start), @intFromPtr(&__data_end), .read_write);
+    try mapRange(page_table, &page_allocator, @intFromPtr(&__data_start), @intFromPtr(&__data_end), .read_write);
     // stack (read_write)
-    try mapRange(&page_allocator, root_paddr, @intFromPtr(&__stack_start), @intFromPtr(&__stack_end), .read_write);
-    // ram (read_write)
-    try mapRange(&page_allocator, root_paddr, free_ram_addr, free_ram_end_addr, .read_write);
-    mame.page.enablePaging(root_paddr);
+    try mapRange(page_table, &page_allocator, @intFromPtr(&__stack_start), @intFromPtr(&__stack_end), .read_write);
 
+    // map whole memory
+    const ram_start = 0xFFFF_FFC0_8000_0000;
+    const total_ram_size = 128 * 1024 * 1024;
+    try mapRange(page_table, &page_allocator, ram_start, ram_start + total_ram_size, .read_write);
+
+    mame.page.enablePaging(page_table.root_paddr);
     log.info("Mapped kernel memory", .{});
 
     timer.init(allocator);
@@ -110,11 +114,8 @@ fn kernelMain() !void {
     }
 }
 
-fn mapRange(allocator: *PageAllocator, root_paddr: usize, start_paddr: usize, end_paddr: usize, perm: Permission) !void {
-    var vaddr = start_paddr;
-    while (vaddr < end_paddr) : (vaddr += 4096) {
-        try mame.page.map4kTo(allocator, root_paddr, vaddr, va2pa(vaddr), perm);
-    }
+fn mapRange(page_table: PageTable, allocator: *PageAllocator, start_vaddr: usize, end_vaddr: usize, perm: Permission) !void {
+    try page_table.mapRange(allocator, start_vaddr, va2pa(start_vaddr), end_vaddr - start_vaddr, perm, false);
 }
 
 fn trampoline() noreturn {

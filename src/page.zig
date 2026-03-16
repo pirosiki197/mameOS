@@ -67,13 +67,13 @@ fn EntryBase(table_level: Level) type {
         ppn: u44,
         _reserved: u10 = 0,
 
-        pub fn newMapPage(paddr: usize, valid: bool, perm: Permission) Self {
+        pub fn newMapPage(paddr: usize, valid: bool, perm: Permission, user: bool) Self {
             return Self{
                 .valid = valid,
                 .read = perm.read(),
                 .write = perm.write(),
                 .execute = perm.execute(),
-                .user = false,
+                .user = user,
                 .ppn = @truncate(paddr >> page_shift),
             };
         }
@@ -99,25 +99,6 @@ fn EntryBase(table_level: Level) type {
 pub const Lv2Entry = EntryBase(.lv2);
 const Lv1Entry = EntryBase(.lv1);
 const Lv0Entry = EntryBase(.lv0);
-
-pub fn map4kTo(allocator: *PageAllocator, root_paddr: Phys, vaddr: usize, paddr: Phys, perm: Permission) !void {
-    const lv2ent = getEntry(Lv2Entry, vaddr, root_paddr);
-    if (!lv2ent.valid) try allocateNewTable(Lv2Entry, lv2ent, allocator);
-
-    const lv1ent = getEntry(Lv1Entry, vaddr, lv2ent.address());
-    if (!lv1ent.valid) try allocateNewTable(Lv1Entry, lv1ent, allocator);
-
-    const lv0ent = getEntry(Lv0Entry, vaddr, lv1ent.address());
-    if (lv0ent.valid) return error.AlreadyMapped;
-    const new_lv0ent = Lv0Entry.newMapPage(paddr, true, perm);
-    lv0ent.* = new_lv0ent;
-}
-
-pub fn setupLv2Table(allocator: *PageAllocator) !Phys {
-    const page = try allocator.allocPages(1);
-    @memset(page, 0);
-    return va2pa(@intFromPtr(page.ptr));
-}
 
 pub fn enablePaging(root_paddr: Phys) void {
     const satp = am.Satp{
@@ -149,3 +130,51 @@ fn allocateNewTable(T: type, entry: *T, allocator: *PageAllocator) !void {
     @memset(page, 0);
     entry.* = T.newMapTable(va2pa(@intFromPtr(page.ptr)), true);
 }
+
+pub const PageTable = struct {
+    root_paddr: Phys,
+
+    pub fn new(allocator: *PageAllocator) !PageTable {
+        const page = try allocator.allocPages(1);
+        @memset(page, 0);
+        return .{
+            .root_paddr = va2pa(@intFromPtr(page.ptr)),
+        };
+    }
+
+    pub fn newProcessTable(allocator: *PageAllocator) !PageTable {
+        const page_table = try PageTable.new(allocator);
+        const root_table = getTable(Lv2Entry, page_table.root_paddr);
+
+        const current_root = am.Satp.store().ppn << 12;
+        const src_table = getTable(Lv2Entry, current_root);
+
+        @memcpy(root_table[256..512], src_table[256..512]);
+
+        return page_table;
+    }
+
+    pub fn fromActualSatp() PageTable {
+        return .{ .root_paddr = am.readSatp().ppn << 12 };
+    }
+
+    pub fn map(self: PageTable, allocator: *PageAllocator, v: Virt, p: Phys, perm: Permission, user: bool) !void {
+        const lv2ent = getEntry(Lv2Entry, v, self.root_paddr);
+        if (!lv2ent.valid) try allocateNewTable(Lv2Entry, lv2ent, allocator);
+
+        const lv1ent = getEntry(Lv1Entry, v, lv2ent.address());
+        if (!lv1ent.valid) try allocateNewTable(Lv1Entry, lv1ent, allocator);
+
+        const lv0ent = getEntry(Lv0Entry, v, lv1ent.address());
+        if (lv0ent.valid) return error.AlreadyMapped;
+        const new_lv0ent = Lv0Entry.newMapPage(p, true, perm, user);
+        lv0ent.* = new_lv0ent;
+    }
+
+    pub fn mapRange(self: PageTable, allocator: *PageAllocator, v_start: Virt, p_start: Phys, size: usize, perm: Permission, user: bool) !void {
+        var offset: usize = 0;
+        while (offset < size) : (offset += page_size) {
+            try self.map(allocator, v_start + offset, p_start + offset, perm, user);
+        }
+    }
+};

@@ -9,13 +9,6 @@ list_heads: [bin_sizes.len]LinkedList = @splat(.{}),
 
 const Self = @This();
 
-pub const vtable = Allocator.VTable{
-    .alloc = alloc,
-    .free = free,
-    .resize = resize,
-    .remap = remap,
-};
-
 const bin_sizes = [_]usize{
     0x20, 0x40, 0x80, 0x100, 0x200, 0x400, 0x800,
 };
@@ -38,7 +31,12 @@ pub fn init(page_allocator: *PageAllocator) Self {
 pub fn allocator(self: *Self) Allocator {
     return .{
         .ptr = self,
-        .vtable = &vtable,
+        .vtable = &.{
+            .alloc = alloc,
+            .free = free,
+            .resize = resize,
+            .remap = remap,
+        },
     };
 }
 
