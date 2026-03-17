@@ -118,8 +118,9 @@ fn mapRange(page_table: PageTable, allocator: *PageAllocator, start_vaddr: usize
     try page_table.mapRange(allocator, start_vaddr, va2pa(start_vaddr), end_vaddr - start_vaddr, perm, false);
 }
 
-fn trampoline() noreturn {
-    kernelMain() catch {
+export fn trampoline() noreturn {
+    kernelMain() catch |err| {
+        log.err("kernelMain error: {}", .{err});
         @panic("Exiting...");
     };
     unreachable;
@@ -138,14 +139,13 @@ export fn boot() linksection(".text.boot") callconv(.naked) noreturn {
         \\sfence.vma
         \\
         \\li t2, %[kernel_offset]
-        \\mv sp, %[stack_top]
+        \\la sp, __stack_top
         \\add sp, sp, t2
-        \\mv t0, %[trampoline]
+        \\la t0, trampoline
         \\add t0, t0, t2
+        \\
         \\jr t0
         :
         : [kernel_offset] "i" (mame.page.KERNEL_BIN_OFFSET),
-          [stack_top] "r" (@intFromPtr(&__stack_top)),
-          [trampoline] "r" (@intFromPtr(&trampoline)),
-    );
+        : .{ .memory = true });
 }
