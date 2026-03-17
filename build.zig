@@ -44,7 +44,7 @@ fn createMameModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     options.addOption(std.log.Level, "log_level", log_level);
 
     const mod = b.addModule("mame", .{
-        .root_source_file = b.path("src/root.zig"),
+        .root_source_file = b.path("kernel/root.zig"),
         .target = target,
         .optimize = optimize,
         .code_model = .medany,
@@ -59,7 +59,7 @@ fn createKernel(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     const kernel = b.addExecutable(.{
         .name = "mame",
         .root_module = b.createModule(.{
-            .root_source_file = b.path("src/boot.zig"),
+            .root_source_file = b.path("kernel/boot.zig"),
             .target = target,
             .optimize = optimize,
             .imports = &.{.{ .name = "mame", .module = mod }},
