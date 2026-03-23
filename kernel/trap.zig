@@ -4,6 +4,7 @@ const log = std.log.scoped(.trap);
 const mame = @import("mame");
 const am = mame.am;
 const process = mame.process;
+const syscall = mame.syscall;
 const timer = mame.timer;
 
 pub fn init() void {
@@ -105,7 +106,16 @@ export fn handleTrap(frame: *TrapFrame) void {
             process.global_scheduler.yield();
         },
         .environment_call_from_u_mode => {
-            log.info("system call!", .{});
+            const res = syscall.handle(frame.a7, .{
+                .arg0 = frame.a0,
+                .arg1 = frame.a1,
+                .arg2 = frame.a2,
+                .arg3 = frame.a3,
+            });
+            if (res != 0) {
+                log.info("error from syscall: {}", .{res});
+            }
+            frame.a0 = res;
             frame.sepc += 4;
         },
         else => {

@@ -89,16 +89,13 @@ fn createUserBin(b: *Build, target: Build.ResolvedTarget) *Build.Step.InstallFil
         }),
     });
     exe.linker_script = b.path("user/user.ld");
+    exe.entry = .{ .symbol_name = "start" };
 
-    const cmd = b.addSystemCommand(&[_][]const u8{
-        "llvm-objcopy",
-        "-O",
-        "binary",
-    });
-    cmd.addFileArg(exe.getEmittedBin());
-    const bin = cmd.addOutputFileArg("user.bin");
+    const bin = exe.addObjCopy(.{ .format = .bin });
 
-    return b.addInstallBinFile(bin, "user.bin");
+    const install = b.addInstallBinFile(bin.getOutput(), "user.bin");
+    install.step.dependOn(&b.addInstallArtifact(exe, .{}).step);
+    return install;
 }
 
 fn setupQemuStep(b: *Build, kernel: *Build.Step.Compile) *Build.Step {

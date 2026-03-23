@@ -122,13 +122,14 @@ pub const ProcessManager = struct {
         return thread;
     }
 
-    fn markAsZombie(self: *Self, thread: *Thread) void {
+    pub fn markAsZombie(self: *Self, thread: *Thread) void {
         thread.state = .zombie;
         self.zombie_threads.append(&thread.queue_node);
     }
 
     pub fn cleanupZombies(self: *Self) void {
         while (self.zombie_threads.pop()) |node| {
+            log.info("cleaning up process...", .{});
             const thread: *Thread = @fieldParentPtr("queue_node", node);
             const proc = thread.proc;
 
