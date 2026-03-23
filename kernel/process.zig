@@ -7,22 +7,32 @@ const mame = @import("mame");
 const am = mame.am;
 const timer = mame.timer;
 const PageAllocator = mame.mem.PageAllocator;
+const PageTable = mame.page.PageTable;
 const TrapFrame = mame.trap.TrapFrame;
+const Phys = mame.mem.Phys;
+const Virt = mame.mem.Virt;
+const va2pa = mame.page.va2pa;
 
 pub var global_manager: ProcessManager = undefined;
 pub var global_scheduler: Scheduler = undefined;
+
+const user_load_addr = 0x1000;
+const user_stack_addr = 0x1000_0000;
 
 pub fn init(page_allocator: *PageAllocator, allocator: Allocator) !void {
     const boot_proc = try allocator.create(Process);
     boot_proc.* = .{
         .pid = 0,
+        .page_table = .fromActualSatp(),
+        .user = false,
     };
     const thread = try allocator.create(Thread);
     thread.* = .{
         .tid = 0,
         .proc = boot_proc,
         .state = .runnable,
-        .sp = 0,
+        .kernel_sp = 0,
+        .user_stack = &.{},
         .kernel_stack = &[_]u8{},
     };
 
@@ -47,25 +57,68 @@ pub const ProcessManager = struct {
         };
     }
 
-    pub fn spawn(self: *Self, pc: usize) !void {
-        const proc = try self.createProcess();
-
-        const thread = try self.createThread(proc, pc);
-
+    pub fn spawnKernel(self: *Self, pc: usize) !void {
+        const proc = try self.createKernelProcess();
+        const thread = try self.createKernelThread(proc, pc);
         global_scheduler.push(thread);
     }
 
-    fn createProcess(self: *Self) !*Process {
+    pub fn spawnUser(self: *Self, bin: []const u8) !void {
+        const proc = try self.createUserProcess(bin);
+        const thread = try self.createUserThread(proc);
+        global_scheduler.push(thread);
+    }
+
+    fn createKernelProcess(self: *Self) !*Process {
+        return self.createProcess(.fromActualSatp(), false);
+    }
+
+    fn createUserProcess(self: *Self, bin: []const u8) !*Process {
+        const page_table = try PageTable.newProcessTable(self.page_allocator);
+
+        const user_bin = try self.page_allocator.allocPages(PageAllocator.numPages(bin.len));
+        @memcpy(user_bin[0..bin.len], bin);
+        try page_table.mapRange(
+            self.page_allocator,
+            user_load_addr,
+            va2pa(@intFromPtr(user_bin.ptr)),
+            user_bin.len,
+            .read_execute,
+            true,
+        );
+
+        return self.createProcess(page_table, true);
+    }
+
+    fn createProcess(self: *Self, page_table: PageTable, user: bool) !*Process {
         const proc = try self.allocator.create(Process);
-        proc.* = Process.init(self.allocPid());
+        proc.* = Process.init(self.allocPid(), page_table, user);
+
         self.processes.append(&proc.node);
         return proc;
     }
 
-    fn createThread(self: *Self, proc: *Process, pc: usize) !*Thread {
+    fn createKernelThread(self: *Self, proc: *Process, pc: usize) !*Thread {
+        const stack = try self.page_allocator.allocPages(2); // 8KiB
         const thread = try self.allocator.create(Thread);
-        thread.* = try Thread.init(self.allocator, self.allocTid(), proc, pc);
+        thread.* = try .initKernel(self.allocTid(), proc, pc, stack);
         proc.threads.append(&thread.proc_node);
+        return thread;
+    }
+
+    fn createUserThread(self: *Self, proc: *Process) !*Thread {
+        const user_stack = try self.page_allocator.allocPages(2);
+        try proc.page_table.mapRange(
+            self.page_allocator,
+            user_stack_addr,
+            va2pa(@intFromPtr(user_stack.ptr)),
+            user_stack.len,
+            .read_write,
+            true,
+        );
+        const kernel_stack = try self.page_allocator.allocPages(1);
+        const thread = try self.allocator.create(Thread);
+        thread.* = .initUser(self.allocTid(), proc, user_load_addr, user_stack, kernel_stack);
         return thread;
     }
 
@@ -130,10 +183,23 @@ pub const Scheduler = struct {
             self.run_queue.append(&prev.queue_node);
         }
 
+        if (next.proc != prev.proc) {
+            mame.page.enablePaging(next.proc.page_table.root_paddr);
+        }
+
+        if (next.proc.user) {
+            asm volatile ("csrw sscratch, %[stack]"
+                :
+                : [stack] "r" (@intFromPtr(next.kernel_stack.ptr) + next.kernel_stack.len),
+            );
+        } else {
+            asm volatile ("csrw sscratch, x0");
+        }
+
         asm volatile ("call switchContext"
             :
-            : [a0] "{a0}" (&prev.sp),
-              [a1] "{a1}" (&next.sp),
+            : [a0] "{a0}" (&prev.kernel_sp),
+              [a1] "{a1}" (&next.kernel_sp),
         );
     }
 };
@@ -142,6 +208,8 @@ pub const Process = struct {
     pid: u32,
     threads: std.DoublyLinkedList = .{},
     state: State = .live,
+    page_table: PageTable,
+    user: bool,
     node: std.DoublyLinkedList.Node = .{},
 
     const Self = @This();
@@ -150,9 +218,11 @@ pub const Process = struct {
         live,
     };
 
-    fn init(pid: u32) Self {
+    fn init(pid: u32, page_table: PageTable, user: bool) Self {
         return .{
             .pid = pid,
+            .page_table = page_table,
+            .user = user,
         };
     }
 };
@@ -161,7 +231,8 @@ pub const Thread = struct {
     tid: usize,
     proc: *Process,
     state: State,
-    sp: usize,
+    kernel_sp: Virt,
+    user_stack: []u8 = &.{},
     kernel_stack: []u8,
     queue_node: std.DoublyLinkedList.Node = .{},
     proc_node: std.DoublyLinkedList.Node = .{},
@@ -174,13 +245,13 @@ pub const Thread = struct {
         zombie,
     };
 
-    fn init(allocator: Allocator, tid: usize, proc: *Process, pc: usize) !Self {
-        const stack = try allocator.alignedAlloc(u8, Alignment.fromByteUnits(4096), 8192);
+    fn initKernel(tid: usize, proc: *Process, pc: usize, stack: []u8) !Self {
         var sp_addr = @intFromPtr(stack.ptr) + stack.len;
 
         sp_addr -= @sizeOf(TrapFrame);
         var frame: *TrapFrame = @ptrFromInt(sp_addr);
         frame.ra = @intFromPtr(&processExit);
+        frame.sp = @intFromPtr(stack.ptr) + stack.len;
         frame.sstatus = @bitCast(am.Sstatus{
             .spie = true,
             .spp = 1,
@@ -198,8 +269,38 @@ pub const Thread = struct {
             .tid = tid,
             .proc = proc,
             .state = .runnable,
-            .sp = sp_addr,
+            .kernel_sp = sp_addr,
             .kernel_stack = stack,
+        };
+    }
+
+    fn initUser(tid: usize, proc: *Process, pc: usize, user_stack: []u8, kernel_stack: []u8) Thread {
+        var kernel_sp = @intFromPtr(kernel_stack.ptr) + kernel_stack.len;
+
+        kernel_sp -= @sizeOf(TrapFrame);
+        var frame: *TrapFrame = @ptrFromInt(kernel_sp);
+        frame.ra = @intFromPtr(&processExit);
+        frame.sp = user_stack_addr + user_stack.len;
+        frame.sstatus = @bitCast(am.Sstatus{
+            .spie = true,
+            .spp = 0,
+        });
+        frame.sepc = pc;
+
+        kernel_sp -= 8 * 13;
+        const sp: [*]usize = @ptrFromInt(kernel_sp);
+        sp[0] = @intFromPtr(&forkret);
+        for (1..13) |i| {
+            sp[i] = 0; // s0 - s11
+        }
+
+        return .{
+            .tid = tid,
+            .proc = proc,
+            .state = .runnable,
+            .kernel_sp = kernel_sp,
+            .user_stack = user_stack,
+            .kernel_stack = kernel_stack,
         };
     }
 
@@ -266,7 +367,7 @@ export fn switchContext(prev_sp: *usize, next_sp: *usize) callconv(.naked) void 
         \\
         \\addi sp, sp, 13 * 8
         \\ret
-    );
+        ::: .{ .memory = true });
 }
 
 pub fn sleep(ticks: u64) void {

@@ -75,7 +75,7 @@ fn markNotUsed(self: *Self, pageId: PageID, num_pages: usize) void {
     }
 }
 
-pub fn allocPages(self: *Self, num_pages: usize) ![]align(4096) u8 {
+pub fn allocPages(self: *Self, num_pages: usize) Allocator.Error![]align(4096) u8 {
     var count: usize = 0;
     var pageId: PageID = 0;
     while (pageId < self.total_pages) : (pageId += 1) {
@@ -92,7 +92,7 @@ pub fn allocPages(self: *Self, num_pages: usize) ![]align(4096) u8 {
         }
     }
 
-    return error.OutOfMemory;
+    return Allocator.Error.OutOfMemory;
 }
 
 pub fn free(self: *Self, memory: []u8) void {

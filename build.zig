@@ -1,6 +1,7 @@
 const std = @import("std");
+const Build = std.Build;
 
-pub fn build(b: *std.Build) void {
+pub fn build(b: *Build) void {
     const target = b.resolveTargetQuery(.{
         .cpu_arch = .riscv64,
         .os_tag = .freestanding,
@@ -15,6 +16,10 @@ pub fn build(b: *std.Build) void {
         .{ .dest_dir = .{ .override = .{ .custom = "img" } } },
     );
     b.getInstallStep().dependOn(&install_kernel.step);
+
+    const user_step = b.step("user", "Create user binary");
+    const user = createUserBin(b, target);
+    user_step.dependOn(&user.step);
 
     const run_step = setupQemuStep(b, kernel);
     run_step.dependOn(&install_kernel.step);
@@ -37,7 +42,7 @@ pub fn build(b: *std.Build) void {
     check_step.dependOn(&kernel.step);
 }
 
-fn createMameModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *std.Build.Module {
+fn createMameModule(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode) *Build.Module {
     const log_level = b.option(std.log.Level, "log_level", "debug, info, warn, error") orelse .info;
 
     const options = b.addOptions();
@@ -55,7 +60,7 @@ fn createMameModule(b: *std.Build, target: std.Build.ResolvedTarget, optimize: s
     return mod;
 }
 
-fn createKernel(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, mod: *std.Build.Module) *std.Build.Step.Compile {
+fn createKernel(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.OptimizeMode, mod: *Build.Module) *Build.Step.Compile {
     const kernel = b.addExecutable(.{
         .name = "mame",
         .root_module = b.createModule(.{
@@ -73,7 +78,30 @@ fn createKernel(b: *std.Build, target: std.Build.ResolvedTarget, optimize: std.b
     return kernel;
 }
 
-fn setupQemuStep(b: *std.Build, kernel: *std.Build.Step.Compile) *std.Build.Step {
+fn createUserBin(b: *Build, target: Build.ResolvedTarget) *Build.Step.InstallFile {
+    const exe = b.addExecutable(.{
+        .name = "user",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("user/hello.zig"),
+            .target = target,
+            .optimize = .ReleaseSmall,
+            .strip = true,
+        }),
+    });
+    exe.linker_script = b.path("user/user.ld");
+
+    const cmd = b.addSystemCommand(&[_][]const u8{
+        "llvm-objcopy",
+        "-O",
+        "binary",
+    });
+    cmd.addFileArg(exe.getEmittedBin());
+    const bin = cmd.addOutputFileArg("user.bin");
+
+    return b.addInstallBinFile(bin, "user.bin");
+}
+
+fn setupQemuStep(b: *Build, kernel: *Build.Step.Compile) *Build.Step {
     const run_step = b.step("run", "Run mameOS in QEMU");
 
     const qemu = b.addSystemCommand(&.{"qemu-system-riscv64"});

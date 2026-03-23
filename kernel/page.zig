@@ -146,16 +146,16 @@ pub const PageTable = struct {
         const page_table = try PageTable.new(allocator);
         const root_table = getTable(Lv2Entry, page_table.root_paddr);
 
-        const current_root = am.Satp.store().ppn << 12;
-        const src_table = getTable(Lv2Entry, current_root);
-
+        const current_table = PageTable.fromActualSatp();
+        const src_table = getTable(Lv2Entry, current_table.root_paddr);
+        // copy kernel page table
         @memcpy(root_table[256..512], src_table[256..512]);
 
         return page_table;
     }
 
     pub fn fromActualSatp() PageTable {
-        return .{ .root_paddr = am.readSatp().ppn << 12 };
+        return .{ .root_paddr = am.Satp.store().ppn << 12 };
     }
 
     pub fn map(self: PageTable, allocator: *PageAllocator, v: Virt, p: Phys, perm: Permission, user: bool) !void {

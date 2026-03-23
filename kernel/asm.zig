@@ -13,6 +13,13 @@ pub const Satp = packed struct(u64) {
             : [satp] "r" (self),
         );
     }
+
+    pub fn store() Satp {
+        const satp = asm volatile ("csrr %[satp], satp"
+            : [satp] "=r" (-> u64),
+        );
+        return @bitCast(satp);
+    }
 };
 
 pub const Sstatus = packed struct(u64) {

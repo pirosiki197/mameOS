@@ -105,8 +105,10 @@ fn kernelMain() !void {
     sbi.timer.set(am.getTime() + 100_000);
 
     try process.init(&page_allocator, allocator);
-    try process.global_manager.spawn(@intFromPtr(&procAEntry));
-    try process.global_manager.spawn(@intFromPtr(&procBEntry));
+    try process.global_manager.spawnKernel(@intFromPtr(&procAEntry));
+    try process.global_manager.spawnKernel(@intFromPtr(&procBEntry));
+    const user_bin = @embedFile("user.bin");
+    try process.global_manager.spawnUser(user_bin);
 
     while (true) {
         asm volatile ("wfi");
