@@ -90,7 +90,15 @@ fn EntryBase(table_level: Level) type {
             };
         }
 
-        fn address(self: Self) usize {
+        fn isLeaf(self: Self) bool {
+            return self.read or self.write or self.execute;
+        }
+
+        fn isTable(self: Self) bool {
+            return self.valid and !self.isLeaf();
+        }
+
+        fn address(self: Self) Phys {
             return @as(usize, @intCast(self.ppn)) << page_shift;
         }
     };
@@ -156,6 +164,41 @@ pub const PageTable = struct {
 
     pub fn fromActualSatp() PageTable {
         return .{ .root_paddr = am.Satp.store().ppn << 12 };
+    }
+
+    pub fn deinit(self: PageTable, allocator: *PageAllocator) void {
+        const table = getTable(Lv2Entry, self.root_paddr);
+
+        for (table[0..255]) |e| {
+            if (!e.valid) continue;
+            freeLv1Table(e.address(), allocator);
+        }
+
+        allocator.free(std.mem.sliceAsBytes(table));
+    }
+
+    fn freeLv1Table(table_paddr: Phys, allocator: *PageAllocator) void {
+        const table = getTable(Lv1Entry, table_paddr);
+
+        for (table) |e| {
+            if (!e.valid) continue;
+            freeLv0Table(e.address(), allocator);
+        }
+
+        allocator.free(std.mem.sliceAsBytes(table));
+    }
+
+    fn freeLv0Table(table_paddr: Phys, allocator: *PageAllocator) void {
+        const table = getTable(Lv0Entry, table_paddr);
+
+        for (table) |e| {
+            if (!e.valid) continue;
+
+            const memory: [*]u8 = @ptrFromInt(pa2va(e.address()));
+            allocator.free(memory[0..page_size]);
+        }
+
+        allocator.free(std.mem.sliceAsBytes(table));
     }
 
     pub fn map(self: PageTable, allocator: *PageAllocator, v: Virt, p: Phys, perm: Permission, user: bool) !void {

@@ -139,7 +139,7 @@ pub const ProcessManager = struct {
 
             if (proc.threads.first == null) {
                 proc.state = .zombie;
-                // TODO: cleanup process memory map
+                proc.page_table.deinit(self.page_allocator);
             }
         }
     }
