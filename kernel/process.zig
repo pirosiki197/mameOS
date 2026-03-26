@@ -18,7 +18,7 @@ pub var global_manager: ProcessManager = undefined;
 pub var global_scheduler: Scheduler = undefined;
 
 const user_load_addr = 0x1000;
-const user_stack_addr = 0x3F_FFFF_F000;
+const user_stack_addr = 0x3F_0000_0000;
 
 pub fn init(page_allocator: *PageAllocator, allocator: Allocator) !void {
     const boot_proc = try allocator.create(Process);
