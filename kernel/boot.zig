@@ -63,6 +63,8 @@ fn procBEntry() void {
     }
 }
 
+const user_bin = @embedFile("user.elf");
+
 var page_allocator: PageAllocator = undefined;
 var slab_allocator: SlabAllocator = undefined;
 
@@ -82,18 +84,48 @@ fn kernelMain() !void {
 
     const page_table = try PageTable.new(&page_allocator);
     // .text (read_execute)
-    try mapRange(page_table, &page_allocator, @intFromPtr(&__text_start), @intFromPtr(&__text_end), .read_execute);
+    try mapRange(
+        page_table,
+        &page_allocator,
+        @intFromPtr(&__text_start),
+        @intFromPtr(&__text_end),
+        .read_execute,
+    );
     // .rodata (read_only)
-    try mapRange(page_table, &page_allocator, @intFromPtr(&__rodata_start), @intFromPtr(&__rodata_end), .read_only);
+    try mapRange(
+        page_table,
+        &page_allocator,
+        @intFromPtr(&__rodata_start),
+        @intFromPtr(&__rodata_end),
+        .read_only,
+    );
     // .data & .bss (read_write)
-    try mapRange(page_table, &page_allocator, @intFromPtr(&__data_start), @intFromPtr(&__data_end), .read_write);
+    try mapRange(
+        page_table,
+        &page_allocator,
+        @intFromPtr(&__data_start),
+        @intFromPtr(&__data_end),
+        .read_write,
+    );
     // stack (read_write)
-    try mapRange(page_table, &page_allocator, @intFromPtr(&__stack_start), @intFromPtr(&__stack_end), .read_write);
+    try mapRange(
+        page_table,
+        &page_allocator,
+        @intFromPtr(&__stack_start),
+        @intFromPtr(&__stack_end),
+        .read_write,
+    );
 
     // map whole memory
     const ram_start = 0xFFFF_FFC0_8000_0000;
     const total_ram_size = 128 * 1024 * 1024;
-    try mapRange(page_table, &page_allocator, ram_start, ram_start + total_ram_size, .read_write);
+    try mapRange(
+        page_table,
+        &page_allocator,
+        ram_start,
+        ram_start + total_ram_size,
+        .read_write,
+    );
 
     mame.page.enablePaging(page_table.root_paddr);
     log.info("Mapped kernel memory", .{});
@@ -107,8 +139,9 @@ fn kernelMain() !void {
     try process.init(&page_allocator, allocator);
     try process.global_manager.spawnKernel(@intFromPtr(&procAEntry));
     try process.global_manager.spawnKernel(@intFromPtr(&procBEntry));
-    const user_bin = @embedFile("user.bin");
-    try process.global_manager.spawnUser(user_bin);
+    process.global_manager.spawnUser(user_bin) catch {
+        log.err("user process error!", .{});
+    };
 
     while (true) {
         asm volatile ("wfi");

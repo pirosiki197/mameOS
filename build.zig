@@ -18,7 +18,7 @@ pub fn build(b: *Build) void {
     b.getInstallStep().dependOn(&install_kernel.step);
 
     const user_step = b.step("user", "Create user binary");
-    const user = createUserBin(b, target);
+    const user = createUserElf(b, target);
     user_step.dependOn(&user.step);
 
     const run_step = setupQemuStep(b, kernel);
@@ -78,7 +78,7 @@ fn createKernel(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.O
     return kernel;
 }
 
-fn createUserBin(b: *Build, target: Build.ResolvedTarget) *Build.Step.InstallFile {
+fn createUserElf(b: *Build, target: Build.ResolvedTarget) *Build.Step.InstallArtifact {
     const exe = b.addExecutable(.{
         .name = "user",
         .root_module = b.createModule(.{
@@ -90,12 +90,9 @@ fn createUserBin(b: *Build, target: Build.ResolvedTarget) *Build.Step.InstallFil
     });
     exe.linker_script = b.path("user/user.ld");
     exe.entry = .{ .symbol_name = "start" };
+    exe.out_filename = "user.elf";
 
-    const bin = exe.addObjCopy(.{ .format = .bin });
-
-    const install = b.addInstallBinFile(bin.getOutput(), "user.bin");
-    install.step.dependOn(&b.addInstallArtifact(exe, .{}).step);
-    return install;
+    return b.addInstallArtifact(exe, .{});
 }
 
 fn setupQemuStep(b: *Build, kernel: *Build.Step.Compile) *Build.Step {

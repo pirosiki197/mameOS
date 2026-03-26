@@ -46,7 +46,7 @@ fn alloc(ctx: *anyopaque, n: usize, alignment: Alignment, _: usize) ?[*]u8 {
     if (binIndex(@max(alignment.toByteUnits(), n))) |index| {
         return self.allocFromBin(index);
     } else {
-        const ret = self.page_allocator.allocPages(PageAllocator.numPages(n)) catch return null;
+        const ret = self.page_allocator.alloc(n) catch return null;
         return @ptrCast(ret.ptr);
     }
 }

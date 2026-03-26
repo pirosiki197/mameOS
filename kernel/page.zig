@@ -22,22 +22,15 @@ pub fn symbol2pa(vaddr: usize) usize {
 }
 
 const Level = enum { lv2, lv1, lv0 };
-pub const Permission = enum(u3) {
-    read_only = 0b001,
-    execute_only = 0b100,
-    read_write = 0b011,
-    read_execute = 0b101,
-    read_write_execute = 0b111,
+pub const Permission = packed struct(u3) {
+    r: bool = false,
+    w: bool = false,
+    x: bool = false,
 
-    fn read(self: Permission) bool {
-        return (@intFromEnum(self) & 0b001) != 0;
-    }
-    fn write(self: Permission) bool {
-        return (@intFromEnum(self) & 0b010) != 0;
-    }
-    fn execute(self: Permission) bool {
-        return (@intFromEnum(self) & 0b100) != 0;
-    }
+    pub const read_only: Permission = .{ .r = true };
+    pub const read_write: Permission = .{ .r = true, .w = true };
+    pub const read_execute: Permission = .{ .r = true, .x = true };
+    pub const read_write_execute: Permission = .{ .r = true, .w = true, .x = true };
 };
 const page_size = 4096;
 const page_shift = 12;
@@ -70,9 +63,9 @@ fn EntryBase(table_level: Level) type {
         pub fn newMapPage(paddr: usize, valid: bool, perm: Permission, user: bool) Self {
             return Self{
                 .valid = valid,
-                .read = perm.read(),
-                .write = perm.write(),
-                .execute = perm.execute(),
+                .read = perm.r,
+                .write = perm.w,
+                .execute = perm.x,
                 .user = user,
                 .ppn = @truncate(paddr >> page_shift),
             };
