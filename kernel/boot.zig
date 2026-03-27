@@ -63,10 +63,9 @@ fn procBEntry() void {
     }
 }
 
-const user_bin = @embedFile("user.elf");
-
-var page_allocator: PageAllocator = undefined;
 var slab_allocator: SlabAllocator = undefined;
+
+const user_bin = @embedFile("user.elf");
 
 fn kernelMain() !void {
     const bss_len = @intFromPtr(&__bss_end) - @intFromPtr(&__bss);
@@ -78,15 +77,14 @@ fn kernelMain() !void {
     const free_ram_addr = pa2va(symbol2pa(@intFromPtr(&__free_ram_start)));
     const memory: [*]align(4096) u8 = @ptrFromInt(free_ram_addr);
 
-    page_allocator = PageAllocator.init(memory[0..memory_len]);
-    slab_allocator = SlabAllocator.init(&page_allocator);
+    mame.mem.init(memory[0..memory_len]);
+    slab_allocator = SlabAllocator.init(&mame.mem.page_allocator);
     const allocator = slab_allocator.allocator();
 
-    const page_table = try PageTable.new(&page_allocator);
+    const page_table = try PageTable.new();
     // .text (read_execute)
     try mapRange(
         page_table,
-        &page_allocator,
         @intFromPtr(&__text_start),
         @intFromPtr(&__text_end),
         .read_execute,
@@ -94,7 +92,6 @@ fn kernelMain() !void {
     // .rodata (read_only)
     try mapRange(
         page_table,
-        &page_allocator,
         @intFromPtr(&__rodata_start),
         @intFromPtr(&__rodata_end),
         .read_only,
@@ -102,7 +99,6 @@ fn kernelMain() !void {
     // .data & .bss (read_write)
     try mapRange(
         page_table,
-        &page_allocator,
         @intFromPtr(&__data_start),
         @intFromPtr(&__data_end),
         .read_write,
@@ -110,7 +106,6 @@ fn kernelMain() !void {
     // stack (read_write)
     try mapRange(
         page_table,
-        &page_allocator,
         @intFromPtr(&__stack_start),
         @intFromPtr(&__stack_end),
         .read_write,
@@ -121,7 +116,6 @@ fn kernelMain() !void {
     const total_ram_size = 128 * 1024 * 1024;
     try mapRange(
         page_table,
-        &page_allocator,
         ram_start,
         ram_start + total_ram_size,
         .read_write,
@@ -136,7 +130,7 @@ fn kernelMain() !void {
     am.enableTimerInterrupt();
     sbi.timer.set(am.getTime() + 100_000);
 
-    try process.init(&page_allocator, allocator);
+    try process.init(allocator);
     try process.global_manager.spawnKernel(@intFromPtr(&procAEntry));
     try process.global_manager.spawnKernel(@intFromPtr(&procBEntry));
     process.global_manager.spawnUser(user_bin) catch {
@@ -149,8 +143,8 @@ fn kernelMain() !void {
     }
 }
 
-fn mapRange(page_table: PageTable, allocator: *PageAllocator, start_vaddr: usize, end_vaddr: usize, perm: Permission) !void {
-    try page_table.mapRange(allocator, start_vaddr, va2pa(start_vaddr), end_vaddr - start_vaddr, perm, false);
+fn mapRange(page_table: PageTable, start_vaddr: usize, end_vaddr: usize, perm: Permission) !void {
+    try page_table.mapRange(start_vaddr, va2pa(start_vaddr), end_vaddr - start_vaddr, perm, false);
 }
 
 export fn trampoline() noreturn {

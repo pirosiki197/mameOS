@@ -2,10 +2,11 @@ const std = @import("std");
 const mame = @import("mame");
 const am = mame.am;
 
-const PageAllocator = mame.mem.PageAllocator;
 const Alignment = std.mem.Alignment;
 const Phys = mame.mem.Phys;
 const Virt = mame.mem.Virt;
+
+const allocator = &mame.mem.page_allocator;
 
 pub const KERNEL_BIN_OFFSET = 0xFFFF_FFFF_0000_0000;
 pub const DIRECT_MAP_OFFSET = 0xFFFF_FFC0_0000_0000;
@@ -126,7 +127,7 @@ fn getTable(T: type, paddr: Phys) []T {
     return ptr[0..num_table_entries];
 }
 
-fn allocateNewTable(T: type, entry: *T, allocator: *PageAllocator) !void {
+fn allocateNewTable(T: type, entry: *T) !void {
     const page = try allocator.allocPages(1);
     @memset(page, 0);
     entry.* = T.newMapTable(va2pa(@intFromPtr(page.ptr)), true);
@@ -135,7 +136,7 @@ fn allocateNewTable(T: type, entry: *T, allocator: *PageAllocator) !void {
 pub const PageTable = struct {
     root_paddr: Phys,
 
-    pub fn new(allocator: *PageAllocator) !PageTable {
+    pub fn new() !PageTable {
         const page = try allocator.allocPages(1);
         @memset(page, 0);
         return .{
@@ -143,8 +144,8 @@ pub const PageTable = struct {
         };
     }
 
-    pub fn newProcessTable(allocator: *PageAllocator) !PageTable {
-        const page_table = try PageTable.new(allocator);
+    pub fn newProcessTable() !PageTable {
+        const page_table = try PageTable.new();
         const root_table = getTable(Lv2Entry, page_table.root_paddr);
 
         const current_table = PageTable.fromActualSatp();
@@ -159,29 +160,29 @@ pub const PageTable = struct {
         return .{ .root_paddr = am.Satp.store().ppn << 12 };
     }
 
-    pub fn deinit(self: PageTable, allocator: *PageAllocator) void {
+    pub fn deinit(self: PageTable) void {
         const table = getTable(Lv2Entry, self.root_paddr);
 
         for (table[0..255]) |e| {
             if (!e.valid) continue;
-            freeLv1Table(e.address(), allocator);
+            freeLv1Table(e.address());
         }
 
         allocator.free(std.mem.sliceAsBytes(table));
     }
 
-    fn freeLv1Table(table_paddr: Phys, allocator: *PageAllocator) void {
+    fn freeLv1Table(table_paddr: Phys) void {
         const table = getTable(Lv1Entry, table_paddr);
 
         for (table) |e| {
             if (!e.valid) continue;
-            freeLv0Table(e.address(), allocator);
+            freeLv0Table(e.address());
         }
 
         allocator.free(std.mem.sliceAsBytes(table));
     }
 
-    fn freeLv0Table(table_paddr: Phys, allocator: *PageAllocator) void {
+    fn freeLv0Table(table_paddr: Phys) void {
         const table = getTable(Lv0Entry, table_paddr);
 
         for (table) |e| {
@@ -194,12 +195,12 @@ pub const PageTable = struct {
         allocator.free(std.mem.sliceAsBytes(table));
     }
 
-    pub fn map(self: PageTable, allocator: *PageAllocator, v: Virt, p: Phys, perm: Permission, user: bool) !void {
+    pub fn map(self: PageTable, v: Virt, p: Phys, perm: Permission, user: bool) !void {
         const lv2ent = getEntry(Lv2Entry, v, self.root_paddr);
-        if (!lv2ent.valid) try allocateNewTable(Lv2Entry, lv2ent, allocator);
+        if (!lv2ent.valid) try allocateNewTable(Lv2Entry, lv2ent);
 
         const lv1ent = getEntry(Lv1Entry, v, lv2ent.address());
-        if (!lv1ent.valid) try allocateNewTable(Lv1Entry, lv1ent, allocator);
+        if (!lv1ent.valid) try allocateNewTable(Lv1Entry, lv1ent);
 
         const lv0ent = getEntry(Lv0Entry, v, lv1ent.address());
         if (lv0ent.valid) return error.AlreadyMapped;
@@ -207,10 +208,14 @@ pub const PageTable = struct {
         lv0ent.* = new_lv0ent;
     }
 
-    pub fn mapRange(self: PageTable, allocator: *PageAllocator, v_start: Virt, p_start: Phys, size: usize, perm: Permission, user: bool) !void {
+    pub fn mapRange(self: PageTable, v_start: Virt, p_start: Phys, size: usize, perm: Permission, user: bool) !void {
         var offset: usize = 0;
         while (offset < size) : (offset += page_size) {
-            try self.map(allocator, v_start + offset, p_start + offset, perm, user);
+            try self.map(v_start + offset, p_start + offset, perm, user);
         }
+    }
+
+    pub fn mapMemory(self: PageTable, v_start: Virt, memory: []u8, perm: Permission, user: bool) !void {
+        return mapRange(self, v_start, va2pa(@intFromPtr(memory.ptr)), memory.len, perm, user);
     }
 };

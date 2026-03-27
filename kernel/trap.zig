@@ -112,9 +112,6 @@ export fn handleTrap(frame: *TrapFrame) void {
                 .arg2 = frame.a2,
                 .arg3 = frame.a3,
             });
-            if (res != 0) {
-                log.info("error from syscall: {}", .{res});
-            }
             frame.a0 = res;
             frame.sepc += 4;
         },

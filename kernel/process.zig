@@ -14,18 +14,21 @@ const Phys = mame.mem.Phys;
 const Virt = mame.mem.Virt;
 const va2pa = mame.page.va2pa;
 
+const page_allocator = &mame.mem.page_allocator;
+
 pub var global_manager: ProcessManager = undefined;
 pub var global_scheduler: Scheduler = undefined;
 
 const user_load_addr = 0x1000;
 const user_stack_addr = 0x3F_0000_0000;
 
-pub fn init(page_allocator: *PageAllocator, allocator: Allocator) !void {
+pub fn init(allocator: Allocator) !void {
     const boot_proc = try allocator.create(Process);
     boot_proc.* = .{
         .pid = 0,
         .page_table = .fromActualSatp(),
         .entry = 0,
+        .heap_brk = 0,
         .user = false,
     };
     const thread = try allocator.create(Thread);
@@ -38,12 +41,11 @@ pub fn init(page_allocator: *PageAllocator, allocator: Allocator) !void {
         .kernel_stack = &[_]u8{},
     };
 
-    global_manager = .init(page_allocator, allocator);
+    global_manager = .init(allocator);
     global_scheduler = .init(thread);
 }
 
 pub const ProcessManager = struct {
-    page_allocator: *PageAllocator,
     allocator: Allocator,
     processes: std.DoublyLinkedList = .{},
     zombie_threads: std.DoublyLinkedList = .{},
@@ -52,9 +54,8 @@ pub const ProcessManager = struct {
 
     const Self = @This();
 
-    pub fn init(page_allocator: *PageAllocator, allocator: Allocator) Self {
+    pub fn init(allocator: Allocator) Self {
         return .{
-            .page_allocator = page_allocator,
             .allocator = allocator,
         };
     }
@@ -72,32 +73,38 @@ pub const ProcessManager = struct {
     }
 
     fn createKernelProcess(self: *Self, pc: usize) !*Process {
-        return self.createProcess(.fromActualSatp(), pc, false);
+        return self.createProcess(.fromActualSatp(), .{ .entry = pc, .break_addr = 0 }, false);
     }
 
-    fn createUserProcess(self: *Self, bin: []const u8) !*Process {
-        const page_table = try PageTable.newProcessTable(self.page_allocator);
+    fn createUserProcess(self: *Self, elf_bytes: []const u8) !*Process {
+        const page_table = try PageTable.newProcessTable();
 
-        const entry = try self.loadElf(page_table, bin);
+        const info = try loadElf(page_table, elf_bytes);
 
-        return self.createProcess(page_table, entry, true);
+        return self.createProcess(page_table, info, true);
     }
 
-    fn loadElf(self: *Self, page_table: PageTable, elf_bytes: []const u8) !usize {
+    fn loadElf(page_table: PageTable, elf_bytes: []const u8) !ElfInfo {
         var reader = std.Io.Reader.fixed(elf_bytes);
         const header = try elf.Header.read(&reader);
+
+        const page_align = std.mem.Alignment.fromByteUnits(4096);
+
+        var break_addr: u64 = 0;
 
         var iter = header.iterateProgramHeadersBuffer(elf_bytes);
         while (try iter.next()) |phdr| {
             if (phdr.p_type != elf.PT_LOAD) continue;
 
+            if (break_addr < phdr.p_vaddr + phdr.p_memsz) {
+                break_addr = phdr.p_vaddr + phdr.p_memsz;
+            }
+
             const start_idx = phdr.p_vaddr % 4096;
-            const dest = try self.page_allocator.alloc(start_idx + phdr.p_memsz);
-            try page_table.mapRange(
-                self.page_allocator,
-                phdr.p_vaddr & ~@as(u64, 0xfff),
-                va2pa(@intFromPtr(dest.ptr)),
-                dest.len,
+            const dest = try page_allocator.alloc(start_idx + phdr.p_memsz);
+            try page_table.mapMemory(
+                page_align.backward(phdr.p_vaddr),
+                dest,
                 .{
                     .r = phdr.p_flags & elf.PF_R > 0,
                     .w = phdr.p_flags & elf.PF_W > 0,
@@ -113,19 +120,22 @@ pub const ProcessManager = struct {
             }
         }
 
-        return header.entry;
+        return .{
+            .entry = header.entry,
+            .break_addr = page_align.forward(break_addr),
+        };
     }
 
-    fn createProcess(self: *Self, page_table: PageTable, entry: usize, user: bool) !*Process {
+    fn createProcess(self: *Self, page_table: PageTable, info: ElfInfo, user: bool) !*Process {
         const proc = try self.allocator.create(Process);
-        proc.* = Process.init(self.allocPid(), page_table, entry, user);
+        proc.* = Process.init(self.allocPid(), page_table, info, user);
 
         self.processes.append(&proc.node);
         return proc;
     }
 
     fn createKernelThread(self: *Self, proc: *Process) !*Thread {
-        const stack = try self.page_allocator.allocPages(2); // 8KiB
+        const stack = try page_allocator.allocPages(2); // 8KiB
         const thread = try self.allocator.create(Thread);
         thread.* = try .initKernel(self.allocTid(), proc, proc.entry, stack);
         proc.threads.append(&thread.proc_node);
@@ -133,16 +143,14 @@ pub const ProcessManager = struct {
     }
 
     fn createUserThread(self: *Self, proc: *Process) !*Thread {
-        const user_stack = try self.page_allocator.allocPages(2);
-        try proc.page_table.mapRange(
-            self.page_allocator,
+        const user_stack = try page_allocator.allocPages(2);
+        try proc.page_table.mapMemory(
             user_stack_addr,
-            va2pa(@intFromPtr(user_stack.ptr)),
-            user_stack.len,
+            user_stack,
             .read_write,
             true,
         );
-        const kernel_stack = try self.page_allocator.allocPages(1);
+        const kernel_stack = try page_allocator.allocPages(1);
         const thread = try self.allocator.create(Thread);
         thread.* = .initUser(self.allocTid(), proc, proc.entry, user_stack, kernel_stack);
         return thread;
@@ -165,7 +173,7 @@ pub const ProcessManager = struct {
 
             if (proc.threads.first == null) {
                 proc.state = .zombie;
-                proc.page_table.deinit(self.page_allocator);
+                proc.page_table.deinit();
             }
         }
     }
@@ -231,12 +239,18 @@ pub const Scheduler = struct {
     }
 };
 
+const ElfInfo = struct {
+    entry: usize,
+    break_addr: usize,
+};
+
 pub const Process = struct {
     pid: u32,
     threads: std.DoublyLinkedList = .{},
     state: State = .live,
     page_table: PageTable,
     entry: usize,
+    heap_brk: usize,
     user: bool,
     node: std.DoublyLinkedList.Node = .{},
 
@@ -246,11 +260,12 @@ pub const Process = struct {
         live,
     };
 
-    fn init(pid: u32, page_table: PageTable, entry: usize, user: bool) Self {
+    fn init(pid: u32, page_table: PageTable, info: ElfInfo, user: bool) Self {
         return .{
             .pid = pid,
             .page_table = page_table,
-            .entry = entry,
+            .entry = info.entry,
+            .heap_brk = info.break_addr,
             .user = user,
         };
     }

@@ -7,7 +7,11 @@ pub fn build(b: *Build) void {
         .os_tag = .freestanding,
         .cpu_model = .baseline,
     });
-    const optimize = b.option(std.builtin.OptimizeMode, "optimize", "Prioritize performance, safety, or binary size") orelse .ReleaseFast;
+    const optimize = b.option(
+        std.builtin.OptimizeMode,
+        "optimize",
+        "Prioritize performance, safety, or binary size",
+    ) orelse .ReleaseSmall;
 
     const mame_mod = createMameModule(b, target, optimize);
     const kernel = createKernel(b, target, optimize, mame_mod);
@@ -53,6 +57,7 @@ fn createMameModule(b: *Build, target: Build.ResolvedTarget, optimize: std.built
         .target = target,
         .optimize = optimize,
         .code_model = .medany,
+        .strip = false,
     });
     mod.addImport("mame", mod);
     mod.addOptions("options", options);
@@ -69,6 +74,7 @@ fn createKernel(b: *Build, target: Build.ResolvedTarget, optimize: std.builtin.O
             .optimize = optimize,
             .imports = &.{.{ .name = "mame", .module = mod }},
             .code_model = .medany,
+            .strip = false,
         }),
     });
 
