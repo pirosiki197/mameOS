@@ -106,6 +106,7 @@ fn setupQemuStep(b: *Build, kernel: *Build.Step.Compile) *Build.Step {
 
     const qemu = b.addSystemCommand(&.{"qemu-system-riscv64"});
     qemu.addArgs(&.{
+        "-cpu",       "rv64,svpbmt=true",
         "-machine",   "virt",
         "-bios",      "default",
         "-nographic", "-serial",

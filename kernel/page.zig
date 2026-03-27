@@ -59,9 +59,17 @@ fn EntryBase(table_level: Level) type {
         dirty: bool = false,
         rsw: u2 = 0,
         ppn: u44,
-        _reserved: u10 = 0,
+        _reserved: u7 = 0,
+        pbmt: MemoryType = .pma,
+        n: u1 = 0,
 
-        pub fn newMapPage(paddr: usize, valid: bool, perm: Permission, user: bool) Self {
+        const MemoryType = enum(u2) {
+            pma = 0,
+            nc = 1,
+            io = 2,
+        };
+
+        pub fn newMapPage(paddr: usize, valid: bool, perm: Permission, user: bool, memory_type: MemoryType) Self {
             return Self{
                 .valid = valid,
                 .read = perm.r,
@@ -69,6 +77,7 @@ fn EntryBase(table_level: Level) type {
                 .execute = perm.x,
                 .user = user,
                 .ppn = @truncate(paddr >> page_shift),
+                .pbmt = memory_type,
             };
         }
 
@@ -204,7 +213,32 @@ pub const PageTable = struct {
 
         const lv0ent = getEntry(Lv0Entry, v, lv1ent.address());
         if (lv0ent.valid) return error.AlreadyMapped;
-        const new_lv0ent = Lv0Entry.newMapPage(p, true, perm, user);
+        const new_lv0ent = Lv0Entry.newMapPage(
+            p,
+            true,
+            perm,
+            user,
+            .pma,
+        );
+        lv0ent.* = new_lv0ent;
+    }
+
+    pub fn mapIo(self: PageTable, v: Virt, p: Phys) !void {
+        const lv2ent = getEntry(Lv2Entry, v, self.root_paddr);
+        if (!lv2ent.valid) try allocateNewTable(Lv2Entry, lv2ent);
+
+        const lv1ent = getEntry(Lv1Entry, v, lv2ent.address());
+        if (!lv1ent.valid) try allocateNewTable(Lv1Entry, lv1ent);
+
+        const lv0ent = getEntry(Lv0Entry, v, lv1ent.address());
+        if (lv0ent.valid) return error.AlreadyMapped;
+        const new_lv0ent = Lv0Entry.newMapPage(
+            p,
+            true,
+            .read_write,
+            false,
+            .io,
+        );
         lv0ent.* = new_lv0ent;
     }
 

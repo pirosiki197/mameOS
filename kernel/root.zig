@@ -8,3 +8,4 @@ pub const sbi = @import("sbi.zig");
 pub const syscall = @import("syscall.zig");
 pub const timer = @import("timer.zig");
 pub const trap = @import("trap.zig");
+pub const uart = @import("uart.zig");

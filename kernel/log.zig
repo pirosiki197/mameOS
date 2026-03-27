@@ -5,6 +5,8 @@ const options = @import("options");
 const mame = @import("mame");
 const sbi = mame.sbi;
 
+const uart = &mame.uart.global_uart;
+
 const LogError = error{};
 
 const Writer = std.io.GenericWriter(void, LogError, write);
@@ -36,5 +38,8 @@ fn log(comptime level: stdlog.Level, comptime scope: @Type(.enum_literal), compt
 }
 
 fn write(_: void, bytes: []const u8) LogError!usize {
-    return sbi.console.write(bytes) catch unreachable;
+    for (bytes) |b| {
+        uart.putc(b);
+    }
+    return bytes.len;
 }

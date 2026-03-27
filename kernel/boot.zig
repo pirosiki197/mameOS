@@ -39,7 +39,13 @@ pub const std_options = klog.default_log_options;
 pub const panic = mame.panic.panic_fn;
 
 export var boot_page_table: [512]u64 align(4096) = blk: {
-    const entry: u64 = @bitCast(Lv2Entry.newMapPage(0x8000_0000, true, .read_write_execute, false));
+    const entry: u64 = @bitCast(Lv2Entry.newMapPage(
+        0x8000_0000,
+        true,
+        .read_write_execute,
+        false,
+        .pma,
+    ));
     var table: [512]u64 = @splat(0);
     table[2] = entry; // 0x8000_0000
     table[258] = entry; // 0xFFFF_FFC0_8000_0000
@@ -111,6 +117,9 @@ fn kernelMain() !void {
         .read_write,
     );
 
+    // MMIO
+    try page_table.mapIo(0xFFFF_FFC0_1000_0000, 0x1000_0000);
+
     // map whole memory
     const ram_start = 0xFFFF_FFC0_8000_0000;
     const total_ram_size = 128 * 1024 * 1024;
@@ -122,6 +131,9 @@ fn kernelMain() !void {
     );
 
     mame.page.enablePaging(page_table.root_paddr);
+
+    mame.uart.init(0xFFFF_FFC0_1000_0000);
+
     log.info("Mapped kernel memory", .{});
 
     timer.init(allocator);
